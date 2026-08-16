@@ -1,0 +1,9 @@
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local backups made by the installer
+*.BoonAdvisorBackup

@@ -1,0 +1,13 @@
+# Shell scripts MUST be LF or Linux/macOS refuses to run them:
+#   /usr/bin/env: 'bash\r': No such file or directory
+*.sh    text eol=lf
+
+# PowerShell is happy either way; keep it native for Windows users.
+*.ps1   text eol=crlf
+
+# Lua and docs: LF everywhere. Hades reads either.
+*.lua   text eol=lf
+*.md    text eol=lf
+
+# Everything else: let git decide, normalise in the repo.
+*       text=auto

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "purpose": "Externally documented build routes used as deterministic scoring regressions, not claimed win-rate measurements.",
+  "sources": {
+    "speedrun_compendium": "https://www.speedrun.com/hades/guides/1i726",
+    "lee_all_aspects": "https://www.leereamsnyder.com/hades-build-guide"
+  },
+  "routes": [
+    {
+      "id": "beowulf_flood_mirage",
+      "name": "Beowulf Flood Flare and Mirage Shot",
+      "aspect": "ShieldLoadAmmoTrait",
+      "objective": "Speed",
+      "required": ["ShieldLoadAmmo_PoseidonRangedTrait"],
+      "support_any": ["ArtemisWeaponTrait", "ArtemisSecondaryTrait", "ArtemisRangedTrait", "ArtemisShoutTrait"],
+      "payoff": "ArtemisBonusProjectileTrait",
+      "hammers": ["ShieldRushProjectileTrait"],
+      "sources": ["speedrun_compendium", "lee_all_aspects"]
+    },
+    {
+      "id": "hera_crush",
+      "name": "Hera Crush Shot",
+      "aspect": "BowLoadAmmoTrait",
+      "objective": "Speed",
+      "required": ["AphroditeRangedTrait"],
+      "support_any": ["DemeterRangedTrait", "DemeterRangedBonusTrait", "ArtemisWeaponTrait", "PoseidonRushTrait"],
+      "hammers": ["BowDoubleShotTrait", "BowTripleShotTrait", "BowTapFireTrait"],
+      "sources": ["speedrun_compendium", "lee_all_aspects"]
+    },
+    {
+      "id": "achilles_flurry",
+      "name": "Achilles Flurry Jab",
+      "aspect": "SpearTeleportTrait",
+      "objective": "Speed",
+      "required_any": ["ZeusWeaponTrait", "ArtemisWeaponTrait"],
+      "support_any": ["PoseidonRushTrait", "RushSpeedBoostTrait", "MoveSpeedTrait"],
+      "hammers": ["SpearAutoAttack"],
+      "sources": ["speedrun_compendium", "lee_all_aspects"]
+    },
+    {
+      "id": "eris_speedrunner",
+      "name": "Eris speedrunner special",
+      "aspect": "GunGrenadeSelfEmpowerTrait",
+      "objective": "Speed",
+      "required": ["ZeusWeaponTrait", "PoseidonRushTrait"],
+      "support_any": ["ArtemisSecondaryTrait", "AphroditeSecondaryTrait", "ZeusLightningDebuff", "ZeusBonusBoltTrait"],
+      "payoff": "ZeusChargedBoltTrait",
+      "hammers": ["GunGrenadeClusterTrait", "GunExplodingSecondaryTrait"],
+      "sources": ["speedrun_compendium", "lee_all_aspects"]
+    },
+    {
+      "id": "demeter_merciful_end",
+      "name": "Demeter Fists Merciful End",
+      "aspect": "FistWeaveTrait",
+      "objective": "Balanced",
+      "required": ["AresWeaponTrait", "AthenaSecondaryTrait"],
+      "support_any": ["AthenaRushTrait", "AresLongCurseTrait"],
+      "payoff": "TriggerCurseTrait",
+      "sources": ["speedrun_compendium", "lee_all_aspects"]
+    },
+    {
+      "id": "chiron_hangover",
+      "name": "Chiron Hangover",
+      "aspect": "BowMarkHomingTrait",
+      "objective": "Balanced",
+      "required": ["DionysusSecondaryTrait", "AphroditeWeaponTrait"],
+      "support_any": ["DionysusPoisonPowerTrait", "DionysusSlowTrait"],
+      "payoff": "DionysusAphroditeStackIncreaseTrait",
+      "hammers": ["BowSecondaryBarrageTrait", "BowConsecutiveBarrageTrait"],
+      "sources": ["lee_all_aspects"]
+    },
+    {
+      "id": "zeus_shield_high_heat",
+      "name": "Zeus Shield high Heat",
+      "aspect": "ShieldTwoShieldTrait",
+      "objective": "HighHeat",
+      "required": ["ZeusSecondaryTrait"],
+      "support_any": ["ZeusLightningDebuff", "ZeusBonusBoltTrait", "CritBonusTrait"],
+      "payoff": "ZeusChargedBoltTrait",
+      "hammers": ["ShieldThrowCatchExplode"],
+      "sources": ["lee_all_aspects"]
+    },
+    {
+      "id": "eris_high_heat_hangover",
+      "name": "Eris high Heat Hangover",
+      "aspect": "GunGrenadeSelfEmpowerTrait",
+      "objective": "HighHeat",
+      "required": ["DionysusWeaponTrait"],
+      "support_any": ["DionysusPoisonPowerTrait", "AphroditeSecondaryTrait", "PoseidonRushTrait"],
+      "hammers": ["GunInfiniteAmmoTrait"],
+      "sources": ["lee_all_aspects"]
+    }
+  ]
+}
