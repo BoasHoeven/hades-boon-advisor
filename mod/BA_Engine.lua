@@ -17,6 +17,7 @@ if BoonAdvisor == nil then
 end
 
 BoonAdvisor.LinkedIndex = nil
+BoonAdvisor.LinkedByName = nil
 BoonAdvisor.NameCache = {}
 
 ---------------------------------------------------------------------------
@@ -71,9 +72,31 @@ end
 	requirement is "hold at least one trait from every group".
 
 	OneOf becomes a single group; OneFromEachSet becomes one group per set.
-	A boon gated behind two or more groups is a duo. Duos are listed under both
-	contributing gods, so entries are de-duplicated by trait name.
+	The trait's runtime inheritance distinguishes Duo, Legendary, and ordinary
+	gated upgrades. Duos are listed under both contributing gods, so entries are
+	de-duplicated by trait name.
 ]]
+local function traitInheritsFrom( traitName, parentName, seen )
+	if traitName == parentName then return true end
+	seen = seen or {}
+	if seen[traitName] then return false end
+	seen[traitName] = true
+	local data = TraitData[traitName]
+	if type( data ) ~= "table" then return false end
+	local parents = data.InheritFrom
+	if type( parents ) == "string" then
+		return traitInheritsFrom( parents, parentName, seen )
+	elseif type( parents ) == "table" then
+		for _, parent in pairs( parents ) do
+			if type( parent ) == "string"
+				and traitInheritsFrom( parent, parentName, seen ) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function BoonAdvisor.BuildLinkedIndex()
 	local index = {}
 	local seen = {}
@@ -93,15 +116,15 @@ function BoonAdvisor.BuildLinkedIndex()
 					if sets ~= nil then
 						seen[traitName] = true
 
+						local traitData = TraitData[traitName]
 						local kind = "Upgrade"
-						if TableLength( sets ) >= 2 then
+						if ( traitData ~= nil and traitData.IsDuoBoon )
+							or traitInheritsFrom( traitName, "SynergyTrait" ) then
 							kind = "Duo"
-						else
-							local traitData = TraitData[traitName]
-							if traitData ~= nil and type( traitData.RarityLevels ) == "table"
-								and traitData.RarityLevels.Legendary ~= nil then
-								kind = "Legendary"
-							end
+						elseif ( traitData ~= nil and type( traitData.RarityLevels ) == "table"
+								and traitData.RarityLevels.Legendary ~= nil )
+							or traitInheritsFrom( traitName, "ShopTier3Trait" ) then
+							kind = "Legendary"
 						end
 
 						table.insert( index, { Name = traitName, Kind = kind, Sets = sets } )
@@ -117,8 +140,17 @@ end
 function BoonAdvisor.GetLinkedIndex()
 	if BoonAdvisor.LinkedIndex == nil then
 		BoonAdvisor.LinkedIndex = BoonAdvisor.BuildLinkedIndex()
+		BoonAdvisor.LinkedByName = {}
+		for _, entry in ipairs( BoonAdvisor.LinkedIndex ) do
+			BoonAdvisor.LinkedByName[entry.Name] = entry
+		end
 	end
 	return BoonAdvisor.LinkedIndex
+end
+
+function BoonAdvisor.LinkedEntry( traitName )
+	BoonAdvisor.GetLinkedIndex()
+	return BoonAdvisor.LinkedByName[traitName]
 end
 
 function BoonAdvisor.HeroHasTrait( traitName )
@@ -136,12 +168,8 @@ end
 
 -- Kind of an offered boon, if it is itself a gated (duo/legendary) boon.
 function BoonAdvisor.KindOf( traitName )
-	for _, entry in ipairs( BoonAdvisor.GetLinkedIndex() ) do
-		if entry.Name == traitName then
-			return entry.Kind
-		end
-	end
-	return nil
+	local entry = BoonAdvisor.LinkedEntry( traitName )
+	return entry ~= nil and entry.Kind or nil
 end
 
 function BoonAdvisor.HeroHasAnyOf( traitNames, ignoredTraitName )
@@ -173,17 +201,41 @@ function BoonAdvisor.LinkedRequirementMet( requirement )
 	return false
 end
 
-function BoonAdvisor.SlotFilled( slot )
+function BoonAdvisor.SlotFilled( slot, ignoredTraitName )
 	if slot == nil or CurrentRun == nil or CurrentRun.Hero == nil then
 		return false
 	end
 	for _, trait in pairs( CurrentRun.Hero.Traits ) do
 		local traitData = TraitData[trait.Name]
-		if traitData ~= nil and traitData.Slot == slot then
+		if trait.Name ~= ignoredTraitName
+			and traitData ~= nil and traitData.Slot == slot then
 			return true
 		end
 	end
 	return false
+end
+
+function BoonAdvisor.CandidateAdvancesLinked( payoffName, candidateName, ignoredTraitName )
+	local entry = BoonAdvisor.LinkedEntry( payoffName )
+	if entry == nil then return false end
+	for _, set in ipairs( entry.Sets ) do
+		if Contains( set, candidateName )
+			and not BoonAdvisor.HeroHasAnyOf( set, ignoredTraitName ) then
+			return true
+		end
+	end
+	return false
+end
+
+function BoonAdvisor.LinkedValueScale( traitName )
+	local weights = BoonAdvisor.Config.Weights
+	local value = BoonAdvisor.Ratings.Base[traitName]
+		or BoonAdvisor.Ratings.CategoryDefaults.Duo
+		or weights.DuoValueNeutral
+	local scale = 0.5 + ( value - weights.DuoValueNeutral ) / weights.DuoValueRange
+	if scale < weights.DuoValueMinScale then scale = weights.DuoValueMinScale end
+	if scale > weights.DuoValueMaxScale then scale = weights.DuoValueMaxScale end
+	return scale
 end
 
 ---------------------------------------------------------------------------
@@ -233,11 +285,13 @@ function BoonAdvisor.EvaluateSynergy( candidateName, replacedTraitName )
 			if satisfiedAfter ~= satisfiedBefore then
 				local displayName = BoonAdvisor.TraitDisplayName( entry.Name )
 				local isDuo = ( entry.Kind == "Duo" )
+				local duoScale = isDuo and BoonAdvisor.LinkedValueScale( entry.Name ) or 1
 
 				if satisfiedAfter > satisfiedBefore and satisfiedAfter >= setCount then
 					if isDuo then
-						table.insert( contributions, weights.DuoComplete )
-						note( 4, weights.DuoComplete, "enables " .. displayName )
+						local contribution = weights.DuoComplete * duoScale
+						table.insert( contributions, contribution )
+						note( 4, contribution, "enables " .. displayName )
 					else
 						table.insert( contributions, weights.UpgradeGate )
 						note( 1, weights.UpgradeGate, "opens " .. displayName )
@@ -249,11 +303,13 @@ function BoonAdvisor.EvaluateSynergy( candidateName, replacedTraitName )
 						build "advances" a dozen duos to 1/2, which inflates
 						every score equally and says nothing useful.
 					]]
-					table.insert( contributions, weights.DuoProgress )
-					note( 3, weights.DuoProgress,
+					local contribution = weights.DuoProgress * duoScale
+					table.insert( contributions, contribution )
+					note( 3, contribution,
 						displayName .. " " .. satisfiedAfter .. "/" .. setCount )
 				elseif satisfiedAfter < satisfiedBefore and satisfiedBefore >= setCount then
-					local loss = isDuo and weights.DuoComplete or weights.UpgradeGate
+					local loss = isDuo and weights.DuoComplete * duoScale
+						or weights.UpgradeGate
 					table.insert( contributions, -loss )
 					note( isDuo and 4 or 2, loss, "swap closes " .. displayName )
 				end
@@ -579,7 +635,11 @@ function BoonAdvisor.ArchetypeBonus( traitName, replacedTraitName )
 				candidateValue = ( archetype.PayoffBonus or weights.ArchetypePayoff )
 					* multiplier + objectiveBonus
 			elseif Contains( archetype.Core, traitName )
-				and not BoonAdvisor.HeroHasTrait( traitName ) then
+				and not BoonAdvisor.HeroHasTrait( traitName )
+				and ( Contains( archetype.Foundation or {}, traitName )
+					or archetype.Payoff == nil
+					or BoonAdvisor.CandidateAdvancesLinked(
+						archetype.Payoff, traitName, replacedTraitName ) ) then
 				candidateValue = ( archetype.CoreBonus or weights.ArchetypeCore )
 					* multiplier + objectiveBonus
 			end
@@ -590,7 +650,11 @@ function BoonAdvisor.ArchetypeBonus( traitName, replacedTraitName )
 			if archetype.Payoff == replacedTraitName then
 				replacedValue = ( archetype.PayoffBonus or weights.ArchetypePayoff )
 					* multiplier + objectiveBonus
-			elseif Contains( archetype.Core, replacedTraitName ) then
+			elseif Contains( archetype.Core, replacedTraitName )
+				and ( Contains( archetype.Foundation or {}, replacedTraitName )
+					or archetype.Payoff == nil
+					or BoonAdvisor.CandidateAdvancesLinked(
+						archetype.Payoff, replacedTraitName, replacedTraitName ) ) then
 				replacedValue = ( archetype.CoreBonus or weights.ArchetypeCore )
 					* multiplier + objectiveBonus
 			end
@@ -787,6 +851,90 @@ function BoonAdvisor.AspectBonus( slot )
 	return 0
 end
 
+function BoonAdvisor.AspectTraitBonus( traitName )
+	for aspectTrait, bonuses in pairs( BoonAdvisor.Ratings.AspectTraitMod or {} ) do
+		if BoonAdvisor.HeroHasTrait( aspectTrait ) and bonuses[traitName] ~= nil then
+			local bonus = bonuses[traitName]
+			local aspectName = BoonAdvisor.TraitDisplayName( aspectTrait )
+			return bonus, bonus > 0 and "fits " .. aspectName
+				or "disrupts " .. aspectName
+		end
+	end
+	return 0, nil
+end
+
+function BoonAdvisor.CurrentHitClass( slot )
+	for aspectTrait, classes in pairs( BoonAdvisor.Ratings.AspectHitClass or {} ) do
+		if BoonAdvisor.HeroHasTrait( aspectTrait ) and classes[slot] ~= nil then
+			return classes[slot]
+		end
+	end
+	local weapon = GetEquippedWeapon ~= nil and GetEquippedWeapon() or nil
+	local classes = weapon ~= nil
+		and ( BoonAdvisor.Ratings.WeaponHitClass or {} )[weapon] or nil
+	return classes ~= nil and classes[slot] or nil
+end
+
+function BoonAdvisor.HitStyleBonus( traitName )
+	local traitData = TraitData[traitName]
+	local slot = traitData ~= nil and traitData.Slot or nil
+	local hitClass = slot ~= nil and BoonAdvisor.CurrentHitClass( slot ) or nil
+	local bonuses = hitClass ~= nil
+		and ( BoonAdvisor.Ratings.HitClassBonus or {} )[hitClass] or nil
+	local bonus = bonuses ~= nil and bonuses[traitName] or 0
+	if bonus > 0 then
+		return bonus, "fits this " .. hitClass .. "-hit slot"
+	elseif bonus < 0 then
+		return bonus, "poor fit for this " .. hitClass .. "-hit slot"
+	end
+	return 0, nil
+end
+
+local function pairingValue( traitName, ignoredTraitName )
+	local total = 0
+	local reason = nil
+	for _, pairing in ipairs( BoonAdvisor.Ratings.Pairings or {} ) do
+		local matched = false
+		if Contains( pairing.A, traitName )
+			and BoonAdvisor.HeroHasAnyOf( pairing.B, ignoredTraitName ) then
+			matched = true
+		elseif Contains( pairing.B, traitName )
+			and BoonAdvisor.HeroHasAnyOf( pairing.A, ignoredTraitName ) then
+			matched = true
+		end
+		if matched then
+			total = total + ( pairing.Bonus or 0 )
+			reason = reason or pairing.Reason
+		end
+	end
+	return total, reason
+end
+
+function BoonAdvisor.MechanicalPairingBonus( traitName, replacedTraitName )
+	local gain, reason = pairingValue( traitName, replacedTraitName )
+	if replacedTraitName ~= nil then
+		local loss = pairingValue( replacedTraitName, nil )
+		gain = gain - loss
+		if gain < 0 then reason = "breaks a working boon pairing" end
+	end
+	return gain, reason
+end
+
+function BoonAdvisor.DepthTraitBonus( traitName )
+	local depth = CurrentRun ~= nil and CurrentRun.RunDepthCache or 0
+	if depth == nil then depth = 0 end
+	if traitName == "HealthRewardBonusTrait" then
+		if depth <= 12 then return 7, "more Hearts remain ahead" end
+		if depth >= 32 then return -8, "too late for many more Hearts" end
+	elseif traitName == "FountainDamageBonusTrait" then
+		if depth <= 14 then return 6, "more fountains remain ahead" end
+		if depth >= 32 then return -7, "few fountains remain" end
+	elseif traitName == "RoomRewardBonusTrait" and depth >= 28 then
+		return -6, "few resource rooms remain"
+	end
+	return 0, nil
+end
+
 --[[
 	Bring a raw score onto the displayed 0-99 scale: compress the top end so
 	strong picks stay distinguishable, then clamp. Shared by the boon screen
@@ -795,7 +943,10 @@ end
 function BoonAdvisor.Finalize( score )
 	local config = BoonAdvisor.Config
 	if score > config.SoftKnee then
-		score = config.SoftKnee + ( score - config.SoftKnee ) * config.SoftKneeFactor
+		local ceiling = 99
+		local span = config.SoftKneeSpan or 18
+		score = ceiling - ( ceiling - config.SoftKnee )
+			* math.exp( -( score - config.SoftKnee ) / span )
 	end
 	if score < 1 then score = 1 end
 	if score > 99 then score = 99 end
@@ -854,6 +1005,15 @@ function BoonAdvisor.ScoreHammer( traitName )
 			else
 				reason = "weak on " .. aspectName
 			end
+		end
+	end
+
+	for _, pairing in ipairs( BoonAdvisor.Ratings.HammerPairings or {} ) do
+		local partner = pairing.A == traitName and pairing.B
+			or pairing.B == traitName and pairing.A or nil
+		if partner ~= nil and BoonAdvisor.HeroHasTrait( partner ) then
+			base = base + ( pairing.Bonus or 0 )
+			reason = pairing.Reason or reason
 		end
 	end
 
@@ -947,6 +1107,10 @@ end
 function BoonAdvisor.PomBuildBonus( traitName )
 	local traitData = TraitData[traitName]
 	local bonus = BoonAdvisor.AspectBonus( traitData ~= nil and traitData.Slot or nil )
+	local hitBonus = BoonAdvisor.HitStyleBonus( traitName )
+	bonus = bonus + hitBonus
+	local aspectTraitBonus = BoonAdvisor.AspectTraitBonus( traitName )
+	bonus = bonus + aspectTraitBonus
 	bonus = bonus + BoonAdvisor.ObjectiveTraitBonus( traitName )
 	local bestArchetypeBonus = 0
 	local bestArchetypeName = nil
@@ -969,7 +1133,11 @@ function BoonAdvisor.PomBuildBonus( traitName )
 				candidateBonus = ( archetype.PayoffBonus
 					or BoonAdvisor.Config.Weights.ArchetypePayoff ) * multiplier
 					+ objectiveBonus
-			elseif Contains( archetype.Core, traitName ) then
+			elseif Contains( archetype.Core, traitName )
+				and ( Contains( archetype.Foundation or {}, traitName )
+					or archetype.Payoff == nil
+					or BoonAdvisor.CandidateAdvancesLinked(
+						archetype.Payoff, traitName, traitName ) ) then
 				candidateBonus = ( archetype.CoreBonus
 					or BoonAdvisor.Config.Weights.ArchetypeCore ) * multiplier
 					+ objectiveBonus
@@ -1012,7 +1180,8 @@ function BoonAdvisor.PomCurveForTrait( traitName )
 end
 
 function BoonAdvisor.ScorePom( traitName, lootData )
-	local base = BoonAdvisor.Ratings.Base[traitName]
+	local base = ( BoonAdvisor.Ratings.PomValue or {} )[traitName]
+		or BoonAdvisor.Ratings.Base[traitName]
 	if base == nil then
 		local kind = BoonAdvisor.KindOf( traitName )
 		base = BoonAdvisor.Ratings.CategoryDefaults[kind]
@@ -1087,6 +1256,42 @@ end
 	slot the run has already filled -- extra Cast charges matter far more once
 	there is a Cast worth firing.
 ]]
+local function inheritedTraitField( traitName, fieldName, seen )
+	seen = seen or {}
+	if seen[traitName] then return nil end
+	seen[traitName] = true
+	local data = TraitData[traitName]
+	if type( data ) ~= "table" then return nil end
+	if data[fieldName] ~= nil then return data[fieldName] end
+	local parents = data.InheritFrom
+	if type( parents ) == "string" then parents = { parents } end
+	if type( parents ) == "table" then
+		for _, parent in pairs( parents ) do
+			local value = inheritedTraitField( parent, fieldName, seen )
+			if value ~= nil then return value end
+		end
+	end
+	return nil
+end
+
+function BoonAdvisor.ChaosCurseDuration( traitName )
+	local uses = inheritedTraitField( traitName, "RemainingUses" )
+	if type( uses ) ~= "table" then return 4 end
+	local minimum = uses.BaseMin or uses.BaseValue or 4
+	local maximum = uses.BaseMax or minimum
+	return ( minimum + maximum ) / 2
+end
+
+function BoonAdvisor.EncountersUntilNextBoss()
+	local run = CurrentRun
+	local room = run ~= nil and run.CurrentRoom or nil
+	local bossDepths = { Tartarus = 11, Asphodel = 7, Elysium = 9 }
+	local bossDepth = room ~= nil and bossDepths[room.RoomSetName] or nil
+	local biomeDepth = run ~= nil and run.BiomeDepthCache or nil
+	if bossDepth == nil or biomeDepth == nil then return nil end
+	return math.max( 0, bossDepth - biomeDepth )
+end
+
 function BoonAdvisor.ScoreChaos( itemData )
 	local ratings = BoonAdvisor.Ratings
 	local blessing = itemData.ItemName
@@ -1108,6 +1313,11 @@ function BoonAdvisor.ScoreChaos( itemData )
 
 	if curse ~= nil then
 		score = score - ( ratings.ChaosCurses[curse] or 8 )
+		local untilBoss = BoonAdvisor.EncountersUntilNextBoss()
+		if untilBoss ~= nil and untilBoss <= BoonAdvisor.ChaosCurseDuration( curse ) then
+			score = score - ( BoonAdvisor.Config.Doors.ChaosBossPenalty or 0 )
+			reason = "curse may still be active at the boss"
+		end
 	end
 
 	if reason == nil then
@@ -1171,8 +1381,12 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		end
 		score = base
 
-		-- Rarity nudge.
-		score = score + ( weights.Rarity[itemData.Rarity] or 0 )
+		-- Duo and Legendary baselines already describe the complete fixed-rarity
+		-- boon. Ordinary offers still get a modest nudge for rolled rarity.
+		local offeredKind = BoonAdvisor.KindOf( traitName )
+		if offeredKind ~= "Duo" and offeredKind ~= "Legendary" then
+			score = score + ( weights.Rarity[itemData.Rarity] or 0 )
+		end
 
 		-- Slot economy.
 		local reasonPriority = 0
@@ -1218,6 +1432,9 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			if slot ~= nil then
 				score = score + BoonAdvisor.AspectBonus( slot )
 			end
+			local newHitBonus = BoonAdvisor.HitStyleBonus( traitName )
+			local oldHitBonus = BoonAdvisor.HitStyleBonus( oldName )
+			score = score + newHitBonus - oldHitBonus
 		elseif slot ~= nil then
 			if BoonAdvisor.SlotFilled( slot ) then
 				score = score + weights.SlotExchange
@@ -1229,6 +1446,27 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 				reasonPriority = 2
 			end
 			score = score + BoonAdvisor.AspectBonus( slot )
+			local hitScore, hitReason = BoonAdvisor.HitStyleBonus( traitName )
+			score = score + hitScore
+			if hitReason ~= nil and reasonPriority < 2 then
+				reason = hitReason
+				reasonPriority = 1
+			end
+		end
+
+		local aspectTraitScore, aspectTraitReason = BoonAdvisor.AspectTraitBonus( traitName )
+		if itemData.TraitToReplace ~= nil then
+			local oldAspectTraitScore = BoonAdvisor.AspectTraitBonus(
+				itemData.TraitToReplace )
+			aspectTraitScore = aspectTraitScore - oldAspectTraitScore
+			if aspectTraitReason == nil and aspectTraitScore < 0 then
+				aspectTraitReason = "loses an aspect-specific interaction"
+			end
+		end
+		score = score + aspectTraitScore
+		if aspectTraitReason ~= nil and reasonPriority < 2 then
+			reason = aspectTraitReason
+			reasonPriority = 1
 		end
 
 		-- Live synergy. Only a more interesting finding displaces the slot note:
@@ -1241,6 +1479,14 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		if synergyReason ~= nil and synergyReason.Priority > reasonPriority then
 			reason = synergyReason.Text
 			reasonPriority = synergyReason.Priority
+		end
+
+		local pairingScore, pairingReason = BoonAdvisor.MechanicalPairingBonus(
+			traitName, itemData.TraitToReplace )
+		score = score + pairingScore
+		if pairingReason ~= nil and reasonPriority < 3 then
+			reason = pairingReason
+			reasonPriority = 2
 		end
 
 		-- The active Pact can change what a boon is worth.
@@ -1265,6 +1511,16 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		score = score + slamScore
 		if slamReason ~= nil and reasonPriority < 2 then
 			reason = slamReason
+		end
+
+		local depthScore, depthReason = BoonAdvisor.DepthTraitBonus( traitName )
+		if itemData.TraitToReplace ~= nil then
+			local oldDepthScore = BoonAdvisor.DepthTraitBonus( itemData.TraitToReplace )
+			depthScore = depthScore - oldDepthScore
+		end
+		score = score + depthScore
+		if depthReason ~= nil and reasonPriority < 2 then
+			reason = depthReason
 		end
 
 

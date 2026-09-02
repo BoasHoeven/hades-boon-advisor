@@ -43,7 +43,7 @@ Import "../Mods/BoonAdvisor/BA_Keepsakes.lua"
 Import "../Mods/BoonAdvisor/BA_Story.lua"
 Import "../Mods/BoonAdvisor/BA_Telemetry.lua"
 
-BoonAdvisor.Version = "1.12.0"
+BoonAdvisor.Version = "1.13.0"
 
 -- Never let a scoring bug take down a run: the vanilla screen is already built
 -- by the time we draw, so swallowing our own errors leaves the game playable.
@@ -160,7 +160,9 @@ if not BoonAdvisor.Installed then
 			BoonAdvisor.LogChoice( screen, button )
 		end )
 		local result = BoonAdvisor.Vanilla_HandleUpgradeChoiceSelection( screen, button )
-		BoonAdvisor.SafeCall( BoonAdvisor.InvalidateForecastCache )
+		BoonAdvisor.SafeCall( function()
+			BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+		end )
 		BoonAdvisor.SafeCall( function()
 			if CurrentRun ~= nil and BoonAdvisor.ShopItemRoom == CurrentRun.CurrentRoom then
 				BoonAdvisor.DrawShopOverlay()
@@ -217,6 +219,9 @@ if not BoonAdvisor.Installed then
 			local result = BoonAdvisor.Vanilla_CloseUpgradeScreen( screen, button )
 			BoonAdvisor.KeepsakeEvaluationScreen = nil
 			BoonAdvisor.LastKeepsakeEvaluation = nil
+			BoonAdvisor.SafeCall( function()
+				BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+			end )
 			return result
 		end
 	end
@@ -318,10 +323,12 @@ if not BoonAdvisor.Installed then
 		end
 		local removed = loot ~= nil
 			and BoonAdvisor.SafeCall( BoonAdvisor.RemoveShopItem, loot.ObjectId )
-		if removed then
-			BoonAdvisor.SafeCall( BoonAdvisor.DrawShopOverlay )
-		end
-		return BoonAdvisor.Vanilla_HandleLootPickup( currentRun, loot )
+		local result = BoonAdvisor.Vanilla_HandleLootPickup( currentRun, loot )
+		if removed then BoonAdvisor.SafeCall( BoonAdvisor.DrawShopOverlay ) end
+		BoonAdvisor.SafeCall( function()
+			BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+		end )
+		return result
 	end
 
 	BoonAdvisor.Vanilla_PurchaseConsumableItem =
@@ -337,7 +344,69 @@ if not BoonAdvisor.Installed then
 		if removed then
 			BoonAdvisor.SafeCall( BoonAdvisor.DrawShopOverlay )
 		end
+		BoonAdvisor.SafeCall( function()
+			BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+		end )
 		return result
+	end
+
+	BoonAdvisor.Vanilla_HandleSellChoiceSelection =
+		BoonAdvisor.Vanilla_HandleSellChoiceSelection or HandleSellChoiceSelection
+	if BoonAdvisor.Vanilla_HandleSellChoiceSelection ~= nil then
+		function HandleSellChoiceSelection( screen, button )
+			local result = BoonAdvisor.Vanilla_HandleSellChoiceSelection( screen, button )
+			BoonAdvisor.SafeCall( function()
+				BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+			end )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_AddMoney = BoonAdvisor.Vanilla_AddMoney or AddMoney
+	if BoonAdvisor.Vanilla_AddMoney ~= nil then
+		function AddMoney( amount, source )
+			local result = BoonAdvisor.Vanilla_AddMoney( amount, source )
+			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_SpendMoney = BoonAdvisor.Vanilla_SpendMoney or SpendMoney
+	if BoonAdvisor.Vanilla_SpendMoney ~= nil then
+		function SpendMoney( amount, source )
+			local result = BoonAdvisor.Vanilla_SpendMoney( amount, source )
+			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_AddMaxHealth = BoonAdvisor.Vanilla_AddMaxHealth or AddMaxHealth
+	if BoonAdvisor.Vanilla_AddMaxHealth ~= nil then
+		function AddMaxHealth( healthGained, source, args )
+			local result = BoonAdvisor.Vanilla_AddMaxHealth( healthGained, source, args )
+			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_AddLastStand = BoonAdvisor.Vanilla_AddLastStand or AddLastStand
+	if BoonAdvisor.Vanilla_AddLastStand ~= nil then
+		function AddLastStand( args )
+			local result = BoonAdvisor.Vanilla_AddLastStand( args )
+			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_Heal = BoonAdvisor.Vanilla_Heal or Heal
+	if BoonAdvisor.Vanilla_Heal ~= nil then
+		function Heal( victim, triggerArgs )
+			local result = BoonAdvisor.Vanilla_Heal( victim, triggerArgs )
+			if CurrentRun ~= nil and victim == CurrentRun.Hero then
+				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			end
+			return result
+		end
 	end
 
 	BoonAdvisor.Vanilla_PlayTextLine = BoonAdvisor.Vanilla_PlayTextLine or PlayTextLine

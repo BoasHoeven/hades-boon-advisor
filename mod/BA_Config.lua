@@ -39,7 +39,7 @@ BoonAdvisor.Config =
 	Debug = false,
 
 	-- Temporary local diagnostics. When enabled, one compact timing line per
-	-- boon-menu phase is appended beside the save files. Disabled for releases.
+	-- boon-menu phase is appended to the platform log path. Disabled for releases.
 	PerformanceMonitor = false,
 	PerformanceLogFilePath = nil,
 
@@ -66,6 +66,8 @@ BoonAdvisor.Config =
 	]]
 	LogPicks = false,
 	LogFilePath = nil,
+	-- Batch nearby events and write them after the active UI frame.
+	LogFlushDelay = 0.03,
 
 	-- Choose what "best" means for this run. Balanced preserves the normal
 	-- all-purpose advice. Speed favours proven fast routes and free rooms;
@@ -269,6 +271,12 @@ BoonAdvisor.Config =
 
 		-- Taking this was the last prerequisite for a duo boon.
 		DuoComplete = 22,
+		-- Intrinsic Duo value scales the completion/progress term. A weak utility
+		-- Duo still gets some credit, but no longer receives Merciful End's bonus.
+		DuoValueNeutral = 60,
+		DuoValueRange = 30,
+		DuoValueMinScale = 0.15,
+		DuoValueMaxScale = 1.20,
 		-- Taking this satisfies one more prerequisite set of a duo.
 		DuoProgress = 6,
 		--[[
@@ -359,7 +367,9 @@ BoonAdvisor.Config =
 		compressed; the transform is monotonic, so ordering is preserved.
 	]]
 	SoftKnee = 88,
-	SoftKneeFactor = 0.35,
+	-- Exponential headroom preserves visible separation between elite picks
+	-- without allowing the display to grow beyond two digits.
+	SoftKneeSpan = 18,
 
 	-- Rank letter cutoffs, highest first.
 	RankThresholds =
@@ -381,6 +391,7 @@ BoonAdvisor.Config =
 	{
 		Enabled = true,
 		ShowReason = true,
+		RefreshDelay = 0.20,
 
 		Layout =
 		{
@@ -414,6 +425,12 @@ BoonAdvisor.Config =
 		-- Chaos gate: always a Chaos boon, priced in health.
 		ChaosGateBase = 72,
 		ChaosGateCostWeight = 60,
+		ChaosBossProximity = 4,
+		ChaosBossPenalty = 9,
+		ChaosEarlyDepth = 12,
+		ChaosEarlyBonus = 5,
+		ChaosLateDepth = 32,
+		ChaosLatePenalty = 5,
 
 		--[[
 			Trial of the Gods: TWO boons -- one chosen up front, one from the
@@ -431,6 +448,9 @@ BoonAdvisor.Config =
 		-- A Centaur Heart permanently adds max health; it is not ordinary healing.
 		MaxHealthBase = 70,
 		MaxHealthBonusPointWeight = 0.7,
+		HeartDiminishAfter = 4,
+		HeartDiminishPerPickup = 3,
+		HeartLateRunPenalty = 8,
 
 		-- Pure healing is used by Charon's healing stock.
 		HealthBase = 46,
@@ -457,10 +477,15 @@ BoonAdvisor.Config =
 		MoneyBase = 50,
 		MoneyLowBonus = 15,
 		MoneyTarget = 200,
+		MoneyLateDepth = 35,
+		MoneyLatePenalty = 6,
 		KeyRerollBonus = 18,
 		NectarPomValueScale = 0.22,
 		DarknessMaxHealthBonus = 6,
 		ResourceMoneyPointWeight = 0.3,
+		GodPoolSoftCap = 3,
+		GodPoolPenaltyPerGod = 4,
+		GodPoolPenaltyCap = 8,
 
 		--[[
 			Flat tiers, for rewards whose value does not depend on the run.
@@ -588,6 +613,34 @@ BoonAdvisor.Config =
 			TemporaryWeaponLifeOnKillTrait = true,
 		},
 
+		-- Well of Charon effects. These are deliberately separate from ordinary
+		-- shop stock because their duration and run timing determine their value.
+		WellItems =
+		{
+			TemporaryImprovedWeaponTrait = 76,
+			TemporaryMoreAmmoTrait = 72,
+			TemporaryImprovedRangedTrait = 72,
+			TemporaryMoveSpeedTrait = 62,
+			TemporaryBoonRarityTrait = 82,
+			TemporaryArmorDamageTrait = 76,
+			TemporaryAlphaStrikeTrait = 64,
+			TemporaryBackstabTrait = 62,
+			TemporaryImprovedSecondaryTrait = 74,
+			TemporaryImprovedTrapDamageTrait = 52,
+			TemporaryPreloadSuperGenerationTrait = 64,
+			TemporaryForcedSecretDoorTrait = 78,
+			TemporaryForcedChallengeSwitchTrait = 58,
+			TemporaryForcedFishingPointTrait = 34,
+			TemporaryBlockExplodingChariotsTrait = 56,
+			TemporaryLastStandHealTrait = 70,
+			RandomStoreItem = 48,
+			KeepsakeChargeDrop = 34,
+			MetaDropRange = 42,
+			GemDropRange = 40,
+		},
+		WellLateDepth = 28,
+		WellLatePenalty = 8,
+
 		Consumables =
 		{
 			MetaPointDrop = 48,
@@ -672,6 +725,7 @@ BoonAdvisor.Config =
 			RangedAspectBonus = 9,
 			ShackleEmptySlotBonus = 8,
 			ShackleFilledSlotPenalty = 7,
+			ShackleHeavyAspectBonus = 10,
 			HadesEmptyCallBonus = 14,
 			HadesExistingCallPenalty = 30,
 			UrnLowHealthBonus = 7,

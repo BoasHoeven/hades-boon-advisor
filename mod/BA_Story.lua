@@ -78,6 +78,16 @@ local function safeNumberCall( default, fn, ... )
 	return default
 end
 
+local function sisyphusAverage( minimumKey, maximumKey, fallback )
+	local data = NPCData ~= nil and NPCData.NPC_Sisyphus_01 or nil
+	if type( data ) ~= "table" then return fallback end
+	local minimum = data[minimumKey]
+	local maximum = data[maximumKey]
+	if type( minimum ) ~= "number" then return fallback end
+	if type( maximum ) ~= "number" then maximum = minimum end
+	return ( minimum + maximum ) / 2
+end
+
 local function isGodTraitName( traitName, args )
 	if traitName == nil then return false end
 	if IsGodTrait ~= nil then
@@ -150,7 +160,8 @@ local function scoreSisyphusMoney()
 		multiplier = safeNumberCall( 1, GetTotalHeroTraitValue,
 			"MoneyMultiplier", { IsMultiplier = true } )
 	end
-	local amount = rounded( 108 * multiplier )
+	local amount = rounded( sisyphusAverage( "MoneyMin", "MoneyMax", 108 )
+		* multiplier )
 	local money = CurrentRun ~= nil and ( CurrentRun.Money or 0 ) or 0
 	local lowMoney = clamp( ( 150 - money ) / 150, 0, 1 )
 	return config.MoneyBase + config.LowMoneyBonus * lowMoney,
@@ -160,7 +171,8 @@ end
 local function scoreSisyphusDarkness()
 	local config = BoonAdvisor.Config.StoryChoices.Sisyphus
 	local amountMultiplier = safeNumberCall( 1, CalculateMetaPointMultiplier )
-	local amount = math.max( 0, rounded( 55 * amountMultiplier ) )
+	local amount = math.max( 0, rounded( sisyphusAverage(
+		"MetaPointMin", "MetaPointMax", 55 ) * amountMultiplier ) )
 	local score = config.DarknessBase
 	if GetNumMetaUpgrades ~= nil
 		and ( GetNumMetaUpgrades( "MetaPointCapShrineUpgrade" ) or 0 ) > 0 then

@@ -220,8 +220,9 @@ started = time.perf_counter()
 rich_result = evaluate(rich_loot, 72, lua.table(
     YieldBetweenScenarios=True, YieldWithinScenarios=True, YieldDuration=0.01))
 rich_ms = (time.perf_counter() - started) * 1000
-check(abs(rich_result["ExpectedScore"] - 83.2521576017) < 0.000001,
-      "memoized late-run forecast preserves the exact expected score")
+check(abs(rich_result["ExpectedScore"] - 80.2260859174) < 0.000001,
+	  "memoized late-run forecast preserves the exact expected score (got %.10f)"
+	  % rich_result["ExpectedScore"])
 check(rich_ms < 100,
       "late-run exact reroll forecast stays below 100 ms total (%.2f ms)" % rich_ms)
 check(lua.eval("__performanceWaitCalls") >= 6,
