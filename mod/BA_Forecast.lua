@@ -98,7 +98,7 @@ local function scoreOptionAtRarity( option, rarity, lootData, scoreCache )
 	return result.RawScore
 end
 
-local function currentBuildSignature()
+function BoonAdvisor.CurrentBuildSignature()
 	local parts = {}
 	local hero = CurrentRun ~= nil and CurrentRun.Hero or nil
 	for _, trait in pairs( hero ~= nil and hero.Traits or {} ) do
@@ -112,26 +112,22 @@ local function currentBuildSignature()
 	return table.concat( parts, "," )
 end
 
-local function scoringContextSignature( lootData )
+function BoonAdvisor.ScoringContextSignature( lootData )
 	local run = CurrentRun or {}
-	local hero = run.Hero or {}
 	local room = run.CurrentRoom or {}
 	local parts = {
-		"build=" .. currentBuildSignature(),
-		"hp=" .. tostring( hero.Health ),
-		"max=" .. tostring( hero.MaxHealth ),
-		"gold=" .. tostring( run.Money ),
+		"build=" .. BoonAdvisor.CurrentBuildSignature(),
 		"room=" .. tostring( room.Name ),
 		"slam=" .. tostring( room.WallSlamMultiplier ),
 		"depth=" .. tostring( run.RunDepthCache ),
+		"biomeDepth=" .. tostring( run.BiomeDepthCache ),
 		"rerolls=" .. tostring( run.NumRerolls ),
 		"objective=" .. tostring( BoonAdvisor.Config ~= nil
 			and BoonAdvisor.Config.Objective or "Balanced" ),
 		"visible=" .. tostring( visibleChoiceCount( TOTAL_CHOICES ) ),
+		"timer=" .. tostring( BoonAdvisor.TimerPressure ~= nil
+			and BoonAdvisor.TimerPressure() or 0 ),
 	}
-	if BoonAdvisor.LastStandsRemaining ~= nil then
-		table.insert( parts, "dd=" .. tostring( BoonAdvisor.LastStandsRemaining() ) )
-	end
 	for _, rarity in ipairs({ "Rare", "Epic", "Heroic", "Legendary" }) do
 		table.insert( parts, rarity .. "=" .. tostring( lootData ~= nil
 			and lootData.RarityChances ~= nil and lootData.RarityChances[rarity] ) )
@@ -202,7 +198,7 @@ function BoonAdvisor.BuildOfferIndex()
 end
 
 local function ensureForecastCache()
-	local epoch = currentBuildSignature()
+	local epoch = BoonAdvisor.CurrentBuildSignature()
 	if BoonAdvisor.ForecastCacheEpoch ~= epoch then
 		BoonAdvisor.ForecastCacheEpoch = epoch
 		BoonAdvisor.ForecastCache = {}
@@ -1413,7 +1409,7 @@ local function forecastSignature( lootData, pool, mode, currentBest, exclusions,
 		"stack=" .. tostring( lootData.StackNum or 1 ),
 		"best=" .. tostring( currentBest ),
 		"context=" .. tostring( contextKey ),
-		preparedContext or scoringContextSignature( lootData ),
+		preparedContext or BoonAdvisor.ScoringContextSignature( lootData ),
 		preparedPoolFingerprint or poolFingerprint( pool ),
 	}
 	for _, name in ipairs( exclusions or {} ) do table.insert( parts, "exclude=" .. tostring( name ) ) end
@@ -1501,7 +1497,7 @@ function BoonAdvisor.ForecastRerollOffer( lootData, currentBest, args )
 	-- pool. Preparing those once also lets all scenarios reuse option scores.
 	perfStarted = BoonAdvisor.PerfStart ~= nil
 		and BoonAdvisor.PerfStart( args.PerfSession ) or nil
-	local preparedContext = scoringContextSignature( lootData )
+	local preparedContext = BoonAdvisor.ScoringContextSignature( lootData )
 	if BoonAdvisor.PerfLap ~= nil then
 		BoonAdvisor.PerfLap( args.PerfSession, "context_signature", perfStarted )
 	end

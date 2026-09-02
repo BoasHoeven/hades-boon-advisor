@@ -46,7 +46,18 @@ function BoonAdvisor.LogPath()
 	return nil
 end
 
-function BoonAdvisor.LogLine( text )
+function BoonAdvisor.FlushLogQueue()
+	local delay = BoonAdvisor.Config ~= nil
+		and BoonAdvisor.Config.LogFlushDelay or 0
+	if wait ~= nil and delay ~= nil and delay > 0 then
+		wait( delay )
+	end
+
+	local lines = BoonAdvisor.LogQueue or {}
+	BoonAdvisor.LogQueue = {}
+	BoonAdvisor.LogFlushQueued = false
+	if IsEmpty( lines ) then return end
+
 	if io ~= nil and io.open ~= nil then
 		local path = BoonAdvisor.LogPath()
 		if path ~= nil then
@@ -54,7 +65,9 @@ function BoonAdvisor.LogLine( text )
 			pcall( function()
 				local handle = io.open( path, "a" )
 				if handle ~= nil then
-					handle:write( text, "\n" )
+					for _, line in ipairs( lines ) do
+						handle:write( line, "\n" )
+					end
 					handle:close()
 					wrote = true
 				end
@@ -67,7 +80,26 @@ function BoonAdvisor.LogLine( text )
 	end
 	if DebugPrint ~= nil then
 		BoonAdvisor.LogChannel = BoonAdvisor.LogChannel or "debugprint"
-		DebugPrint({ LogOnly = true, Text = text })
+		for _, line in ipairs( lines ) do
+			DebugPrint({ LogOnly = true, Text = line })
+		end
+	end
+end
+
+function BoonAdvisor.LogLine( text )
+	BoonAdvisor.LogQueue = BoonAdvisor.LogQueue or {}
+	table.insert( BoonAdvisor.LogQueue, text )
+	if BoonAdvisor.LogFlushQueued then return end
+
+	-- Disk I/O never runs in the boon/door event that produced the line. A
+	-- short coroutine delay also combines adjacent offer and choice events into
+	-- one open/write/close operation.
+	if thread ~= nil then
+		BoonAdvisor.LogFlushQueued = true
+		BoonAdvisor.LogChannel = BoonAdvisor.LogChannel or "queued"
+		thread( BoonAdvisor.FlushLogQueue )
+	else
+		BoonAdvisor.FlushLogQueue()
 	end
 end
 

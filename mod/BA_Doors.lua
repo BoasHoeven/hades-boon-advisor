@@ -32,6 +32,52 @@ local function hasRunProgressUpgrade( name )
 		or false
 end
 
+local olympianLootNames =
+{
+	ZeusUpgrade = true,
+	PoseidonUpgrade = true,
+	AthenaUpgrade = true,
+	AphroditeUpgrade = true,
+	AresUpgrade = true,
+	ArtemisUpgrade = true,
+	DionysusUpgrade = true,
+	DemeterUpgrade = true,
+}
+
+local function normalizeGodName( god )
+	if type( god ) ~= "string" then return nil end
+	if olympianLootNames[god] then return god end
+	local lootName = god .. "Upgrade"
+	if olympianLootNames[lootName] then return lootName end
+	return nil
+end
+
+function BoonAdvisor.GodForTrait( traitName )
+	if BoonAdvisor.TraitGodIndex == nil then
+		BoonAdvisor.TraitGodIndex = {}
+		local linkedOwners = {}
+		for lootName, _ in pairs( olympianLootNames ) do
+			local loot = LootData[lootName]
+			for _, list in ipairs({ loot ~= nil and loot.WeaponUpgrades or nil,
+				loot ~= nil and loot.Traits or nil }) do
+				for _, name in ipairs( type( list ) == "table" and list or {} ) do
+					BoonAdvisor.TraitGodIndex[name] = lootName
+				end
+			end
+			for name, _ in pairs( loot ~= nil and loot.LinkedUpgrades or {} ) do
+				linkedOwners[name] = linkedOwners[name] or {}
+				linkedOwners[name][lootName] = true
+			end
+		end
+		for name, owners in pairs( linkedOwners ) do
+			if BoonAdvisor.TraitGodIndex[name] == nil and TableLength( owners ) == 1 then
+				BoonAdvisor.TraitGodIndex[name] = next( owners )
+			end
+		end
+	end
+	return BoonAdvisor.TraitGodIndex[traitName]
+end
+
 local function totalTraitValue( name, default, args )
 	return safeNumberCall( default, GetTotalHeroTraitValue, name, args )
 end
@@ -123,11 +169,23 @@ function BoonAdvisor.GetGodCandidateTraits( lootName, args )
 		end
 	end
 
-	for _, list in ipairs({ lootInfo.WeaponUpgrades, lootInfo.Traits }) do
-		if type( list ) == "table" then
-			for _, traitName in ipairs( list ) do
+	local weaponUpgrades = lootInfo.WeaponUpgrades
+	if type( weaponUpgrades ) == "table" then
+		if GetEligibleWeaponTraits ~= nil and args.IgnoreOccupiedTrait == nil then
+			weaponUpgrades = GetEligibleWeaponTraits( weaponUpgrades )
+		end
+		for _, traitName in ipairs( weaponUpgrades ) do
+			local slot = TraitData[traitName] ~= nil and TraitData[traitName].Slot or nil
+			if ( GetEligibleWeaponTraits ~= nil and args.IgnoreOccupiedTrait == nil )
+				or slot == nil
+				or not BoonAdvisor.SlotFilled( slot, args.IgnoreOccupiedTrait ) then
 				addCandidate( traitName )
 			end
+		end
+	end
+	if type( lootInfo.Traits ) == "table" then
+		for _, traitName in ipairs( lootInfo.Traits ) do
+			addCandidate( traitName )
 		end
 	end
 
@@ -216,6 +274,26 @@ function BoonAdvisor.ScoreGodDoor( lootName, args )
 			lootName, hasLegendaryCandidate, args.Room )
 	end
 
+	local god = normalizeGodName( lootName )
+	if god ~= nil then
+		local ownedGods = {}
+		for _, trait in pairs( CurrentRun ~= nil and CurrentRun.Hero ~= nil
+			and CurrentRun.Hero.Traits or {} ) do
+			local traitGod = normalizeGodName( trait.God )
+				or BoonAdvisor.GodForTrait( trait.Name )
+			if traitGod ~= nil then ownedGods[traitGod] = true end
+		end
+		if not ownedGods[god] then
+			local count = TableLength( ownedGods )
+			if count >= doors.GodPoolSoftCap then
+				local penalty = math.min( doors.GodPoolPenaltyCap,
+					( count - doors.GodPoolSoftCap + 1 ) * doors.GodPoolPenaltyPerGod )
+				score = score - penalty
+				reason = "widens an already full god pool"
+			end
+		end
+	end
+
 	return score, reason
 end
 
@@ -233,12 +311,24 @@ function BoonAdvisor.ScoreMaxHealthDoor( room )
 	local doors = BoonAdvisor.Config.Doors
 	local bonusAmount = math.max( 0, amount - 25 )
 	local score = doors.MaxHealthBase + bonusAmount * doors.MaxHealthBonusPointWeight
+	local record = CurrentRun ~= nil and CurrentRun.ConsumableRecord or nil
+	local hearts = record ~= nil and ( record.RoomRewardMaxHealthDrop or 0 ) or 0
+	if hearts > doors.HeartDiminishAfter then
+		score = score - ( hearts - doors.HeartDiminishAfter )
+			* doors.HeartDiminishPerPickup
+	end
+	local depth = GetRunDepth ~= nil and CurrentRun ~= nil
+		and ( GetRunDepth( CurrentRun ) or 0 )
+		or ( CurrentRun ~= nil and CurrentRun.RunDepthCache or 0 )
+	if depth >= 32 then score = score - doors.HeartLateRunPenalty end
 	local pact = BoonAdvisor.Config.Pact or {}
 	if BoonAdvisor.DangerLevel ~= nil then
 		score = score + math.min( pact.MaxHealthBonusCap or 0,
 			BoonAdvisor.DangerLevel() * ( pact.MaxHealthBonusPerDanger or 0 ) )
 	end
-	return score, "+" .. amount .. " max health"
+	local reason = "+" .. amount .. " max health"
+	if depth >= 32 then reason = reason .. "; late in the run" end
+	return score, reason
 end
 
 -- Pure healing from Charon's stock. Centaur Heart doors use the permanent
@@ -596,7 +686,17 @@ function BoonAdvisor.ScoreMoneyDoor( room )
 	local money = CurrentRun ~= nil and ( CurrentRun.Money or 0 ) or 0
 	local need = 1 - math.min( 1, money / doors.MoneyTarget )
 	local score = doors.MoneyBase + doors.MoneyLowBonus * need
-	return score, "+" .. amount .. " Obols; " .. money .. " now"
+	local depth = GetRunDepth ~= nil and CurrentRun ~= nil
+		and ( GetRunDepth( CurrentRun ) or 0 )
+		or ( CurrentRun ~= nil and CurrentRun.RunDepthCache or 0 )
+	local latePenalty = 0
+	if depth >= doors.MoneyLateDepth then
+		latePenalty = doors.MoneyLatePenalty * ( 1 - need )
+		score = score - latePenalty
+	end
+	local reason = "+" .. amount .. " Obols; " .. money .. " now"
+	if latePenalty > 0 then reason = reason .. "; fewer shops remain" end
+	return score, reason
 end
 
 function BoonAdvisor.ScoreGemDoor()
@@ -711,13 +811,48 @@ function BoonAdvisor.ScoreDarknessDoor()
 	return score, table.concat( reasons, ", " )
 end
 
+function BoonAdvisor.ScoreStoryDoor( room )
+	local roomSet = room ~= nil and room.RoomSetName or nil
+	local groupByRoomSet =
+	{
+		Tartarus = "Sisyphus",
+		Asphodel = "Eurydice",
+		Elysium = "Patroclus",
+	}
+	local groupName = groupByRoomSet[roomSet]
+	local choices = groupName ~= nil
+		and BoonAdvisor.StoryChoiceGroups ~= nil
+		and BoonAdvisor.StoryChoiceGroups[groupName] or nil
+	if choices == nil or BoonAdvisor.ScoreStoryChoiceRaw == nil then
+		return BoonAdvisor.Config.Doors.Types.Story, "story room"
+	end
+	local bestScore, bestReason = nil, nil
+	local bonuses = BoonAdvisor.ObjectiveProfile().StoryBonus or {}
+	for _, choiceKey in ipairs( choices ) do
+		if BoonAdvisor.StoryChoiceEligible( choiceKey ) then
+			local score, reason = BoonAdvisor.ScoreStoryChoiceRaw( choiceKey )
+			if score ~= nil then
+				score = score + ( bonuses[choiceKey] or 0 )
+				if bestScore == nil or score > bestScore then
+					bestScore, bestReason = score, reason
+				end
+			end
+		end
+	end
+	return bestScore or BoonAdvisor.Config.Doors.Types.Story,
+		bestReason or "story room"
+end
+
 -- Score one door. Returns score, reason.
 local function scoreDoorBase( room, refreshArgs )
 	local doors = BoonAdvisor.Config.Doors
 	local rewardType = room.ChosenRewardType
 
 	if rewardType == nil then
-		return doors.Types.Story, "story room"
+		return BoonAdvisor.ScoreStoryDoor( room )
+	end
+	if rewardType == "Story" then
+		return BoonAdvisor.ScoreStoryDoor( room )
 	end
 
 	if rewardType == "Boon" and room.ForceLootName ~= nil then
@@ -833,23 +968,12 @@ function BoonAdvisor.ScoreBlindBoxLoot()
 	return total / count, "random boon from " .. count .. " eligible gods"
 end
 
---[[
-	Shop stock, scored with the same engine as everything else. A shop boon
-	names its god in itemData.Args.Name, so it routes straight through the door
-	scorer and can report the duo it would unlock.
-]]
+-- Shop stock uses the same contextual scoring paths as room rewards.
 function BoonAdvisor.ScoreShopItem( itemData )
 	local shop = BoonAdvisor.Config.Shop
-	local name = itemData.Name
+	local name = itemData.Name or itemData.ItemName
 
-	--[[
-		A boon on sale is scored exactly like that god's door.
-
-		Shop boons are built with Name = "RandomLoot" and the actual god in
-		Args.ForceLootName -- not Args.Name, which is nil. Reading the wrong
-		field sent every shop boon to the generic branch, where an Aphrodite
-		boon showed up as "item".
-	]]
+	-- Shop boons store the actual god in Args.ForceLootName.
 	if itemData.Type == "Boon" and itemData.Args ~= nil then
 		local godLootName = itemData.Args.ForceLootName or itemData.Args.Name
 		if godLootName ~= nil then
@@ -867,11 +991,68 @@ function BoonAdvisor.ScoreShopItem( itemData )
 	if name == "StackUpgradeDrop" or name == "StoreRewardRandomStack" then
 		return BoonAdvisor.ScorePomDoor()
 	end
+	if name == "EmptyMaxHealthDrop" then
+		return BoonAdvisor.ScoreMaxHealthDoor()
+	end
+	if name == "DamageSelfDrop" then
+		local health = CurrentRun ~= nil and CurrentRun.Hero ~= nil
+			and ( CurrentRun.Hero.Health or 0 ) or 0
+		local cost = itemData.HealthCost or 30
+		if health <= cost then return 1, "not enough health" end
+		local fraction = health > 0 and cost / health or 1
+		local money = CurrentRun ~= nil and ( CurrentRun.Money or 0 ) or 0
+		local moneyNeed = 1 - math.min( 1, money / BoonAdvisor.Config.Doors.MoneyTarget )
+		local score = 42 + 10 * moneyNeed - 30 * fraction
+			* BoonAdvisor.ObjectiveRiskMultiplier()
+		return score, "trades " .. cost .. " health for gold"
+	end
 	if shop.HealthConsumables[name] then
 		return BoonAdvisor.ScoreHealthDoor()
 	end
 	if shop.HealthTraits[name] then
 		return BoonAdvisor.ScoreHealthDoor()
+	end
+
+	local wellValue = shop.WellItems[name]
+	if wellValue ~= nil then
+		local slotByItem =
+		{
+			TemporaryImprovedWeaponTrait = "Melee",
+			TemporaryMoreAmmoTrait = "Ranged",
+			TemporaryImprovedRangedTrait = "Ranged",
+			TemporaryImprovedSecondaryTrait = "Secondary",
+		}
+		local slot = slotByItem[name]
+		if slot ~= nil then wellValue = wellValue + BoonAdvisor.AspectBonus( slot ) end
+		if name == "TemporaryMoveSpeedTrait" and BoonAdvisor.TimerPressure ~= nil then
+			wellValue = wellValue + 6 * BoonAdvisor.TimerPressure()
+		end
+		local timed =
+		{
+			TemporaryImprovedWeaponTrait = true,
+			TemporaryMoreAmmoTrait = true,
+			TemporaryImprovedRangedTrait = true,
+			TemporaryMoveSpeedTrait = true,
+			TemporaryBoonRarityTrait = true,
+			TemporaryArmorDamageTrait = true,
+			TemporaryAlphaStrikeTrait = true,
+			TemporaryBackstabTrait = true,
+			TemporaryImprovedSecondaryTrait = true,
+			TemporaryImprovedTrapDamageTrait = true,
+			TemporaryPreloadSuperGenerationTrait = true,
+			TemporaryBlockExplodingChariotsTrait = true,
+		}
+		local depth = GetRunDepth ~= nil and CurrentRun ~= nil
+			and ( GetRunDepth( CurrentRun ) or 0 )
+			or ( CurrentRun ~= nil and CurrentRun.RunDepthCache or 0 )
+		local reason = "useful for upcoming encounters"
+		if timed[name] and depth >= shop.WellLateDepth then
+			wellValue = wellValue - shop.WellLatePenalty
+			reason = "fewer encounters remain"
+		elseif slot ~= nil and BoonAdvisor.AspectBonus( slot ) > 0 then
+			reason = "boosts your build's main slot"
+		end
+		return wellValue, reason
 	end
 
 	local entry = shop.Items[name]
@@ -1062,9 +1243,26 @@ function BoonAdvisor.ScoreChaosGate( exitDoor )
 	local score = doors.ChaosGateBase
 		+ BoonAdvisor.ExpectedRarityBonus( "TrialUpgrade", false, exitDoor.Room )
 		- ( doors.ChaosGateCostWeight * fraction * risk )
+	local depth = GetRunDepth ~= nil and CurrentRun ~= nil
+		and ( GetRunDepth( CurrentRun ) or 0 )
+		or ( CurrentRun ~= nil and CurrentRun.RunDepthCache or 0 )
+	if depth <= doors.ChaosEarlyDepth then
+		score = score + doors.ChaosEarlyBonus
+	elseif depth >= doors.ChaosLateDepth then
+		score = score - doors.ChaosLatePenalty
+	end
+	local untilBoss = BoonAdvisor.EncountersUntilNextBoss ~= nil
+		and BoonAdvisor.EncountersUntilNextBoss() or nil
+	if untilBoss ~= nil and untilBoss <= doors.ChaosBossProximity then
+		score = score - doors.ChaosBossPenalty
+	end
 
 	local reason
-	if fraction >= 0.4 then
+	if untilBoss ~= nil and untilBoss <= doors.ChaosBossProximity then
+		reason = "curse may reach the boss"
+	elseif depth >= doors.ChaosLateDepth then
+		reason = "less run remains for the Chaos blessing"
+	elseif fraction >= 0.4 then
 		reason = "costs " .. cost .. " of your " .. math.floor( health ) .. " health"
 	else
 		reason = "costs " .. cost .. " health"
@@ -1111,6 +1309,23 @@ function BoonAdvisor.RegisterDoor( exitDoor )
 	BoonAdvisor.LastDoorEvaluations = nil
 	BoonAdvisor.LastBestDoorObjectId = nil
 	BoonAdvisor.LastDoorEvaluationRoom = nil
+end
+
+function BoonAdvisor.MarkRunStateDirty( args )
+	args = args or {}
+	if args.BuildChanged and BoonAdvisor.InvalidateForecastCache ~= nil then
+		BoonAdvisor.InvalidateForecastCache()
+	end
+	local room = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
+	if room == nil or BoonAdvisor.DoorCandidateRoom ~= room
+		or IsEmpty( BoonAdvisor.DoorCandidates or {} ) then
+		return
+	end
+	BoonAdvisor.DoorContextEpoch = ( BoonAdvisor.DoorContextEpoch or 0 ) + 1
+	BoonAdvisor.LastDoorEvaluations = nil
+	BoonAdvisor.LastBestDoorObjectId = nil
+	BoonAdvisor.LastDoorEvaluationRoom = nil
+	BoonAdvisor.QueueDoorOverlayRefresh()
 end
 
 function BoonAdvisor.IsDoorAdvisorVisible( exitDoor )
@@ -1179,6 +1394,7 @@ function BoonAdvisor.CollectDoorEvaluations( refreshArgs )
 	-- mid-collection bumps the epoch and queues its own refresh.
 	local startRoom = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
 	local startEpoch = BoonAdvisor.DoorRegistrationEpoch or 0
+	local startContextEpoch = BoonAdvisor.DoorContextEpoch or 0
 	local snapshot = {}
 	for doorId, exitDoor in pairs( BoonAdvisor.DoorCandidates or {} ) do
 		table.insert( snapshot, { Id = doorId, Door = exitDoor } )
@@ -1210,6 +1426,7 @@ function BoonAdvisor.CollectDoorEvaluations( refreshArgs )
 	local endRoom = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
 	local fresh = endRoom == startRoom
 		and ( BoonAdvisor.DoorRegistrationEpoch or 0 ) == startEpoch
+		and ( BoonAdvisor.DoorContextEpoch or 0 ) == startContextEpoch
 	if fresh then
 		BoonAdvisor.LastDoorEvaluations = evaluations
 		BoonAdvisor.LastBestDoorObjectId = bestId
@@ -1355,19 +1572,29 @@ function BoonAdvisor.RefreshDoorOverlays( refreshArgs )
 end
 
 function BoonAdvisor.FinishQueuedDoorRefresh( args )
-	wait( 0.01 )
+	wait( BoonAdvisor.Config.Doors.RefreshDelay or 0.20 )
 	if args == nil or BoonAdvisor.DoorRefreshQueuedRoom ~= args.Room then return end
-	BoonAdvisor.DoorRefreshQueuedRoom = nil
-	if CurrentRun == nil or CurrentRun.CurrentRoom ~= args.Room then return end
+	if CurrentRun == nil or CurrentRun.CurrentRoom ~= args.Room then
+		BoonAdvisor.DoorRefreshQueuedRoom = nil
+		return
+	end
+	local generation = BoonAdvisor.DoorRefreshGeneration or 0
 	BoonAdvisor.RefreshDoorOverlays({
 		YieldWithinForecasts = true,
 		YieldBetweenDoors = true,
 		YieldDuration = 0.01,
 	})
+	if BoonAdvisor.DoorRefreshQueuedRoom ~= args.Room then return end
+	if generation ~= ( BoonAdvisor.DoorRefreshGeneration or 0 ) then
+		thread( BoonAdvisor.SafeFinishQueuedDoorRefresh, { Room = args.Room } )
+		return
+	end
+	BoonAdvisor.DoorRefreshQueuedRoom = nil
 end
 
 function BoonAdvisor.QueueDoorOverlayRefresh()
 	local room = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
+	BoonAdvisor.DoorRefreshGeneration = ( BoonAdvisor.DoorRefreshGeneration or 0 ) + 1
 	if thread == nil or wait == nil then
 		BoonAdvisor.RefreshDoorOverlays()
 		return

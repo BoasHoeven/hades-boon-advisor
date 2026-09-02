@@ -22,8 +22,12 @@ BoonAdvisor.Ratings = {}
 -- Fallbacks by category, used when a boon has no explicit rating below.
 BoonAdvisor.Ratings.CategoryDefaults =
 {
-	Duo = 86,
-	Legendary = 80,
+	-- Unrated gated boons must not become automatic S picks merely because the
+	-- game labels them Legendary. Explicit ratings below cover the vanilla
+	-- pools; these conservative values are for modded or otherwise unknown
+	-- traits.
+	Duo = 72,
+	Legendary = 70,
 	Upgrade = 66, -- same-god boons gated behind a prerequisite
 	Consumable = 48,
 	Chaos = 58,
@@ -71,9 +75,9 @@ BoonAdvisor.Ratings.Base =
 	---------------------------------------------------------------------
 	-- Cast (Ranged)
 	---------------------------------------------------------------------
-	DemeterRangedTrait         = 82, -- Crystal Beam
+	DemeterRangedTrait         = 72, -- Crystal Beam
 	ArtemisRangedTrait         = 74, -- True Shot
-	DionysusRangedTrait        = 72, -- Trippy Shot
+	DionysusRangedTrait        = 80, -- Trippy Shot
 	AresRangedTrait            = 70, -- Slicing Shot
 	AphroditeRangedTrait       = 66, -- Crush Shot
 	--[[
@@ -96,7 +100,7 @@ BoonAdvisor.Ratings.Base =
 		validated in play.
 	]]
 	PoseidonRangedTrait        = 76, -- Flood Shot
-	ZeusRangedTrait            = 62, -- Electric Shot
+	ZeusRangedTrait            = 72, -- Electric Shot
 	AthenaRangedTrait          = 60, -- Phalanx Shot
 
 	--[[
@@ -107,19 +111,19 @@ BoonAdvisor.Ratings.Base =
 		note below.
 	]]
 	ShieldLoadAmmo_PoseidonRangedTrait  = 76, -- Flood Flare
-	ShieldLoadAmmo_DemeterRangedTrait   = 78, -- Icy Flare
+	ShieldLoadAmmo_DemeterRangedTrait   = 72, -- Icy Flare
 	ShieldLoadAmmo_ArtemisRangedTrait   = 72, -- Hunter's Flare
 	ShieldLoadAmmo_AresRangedTrait      = 70, -- Slicing Flare
-	ShieldLoadAmmo_DionysusRangedTrait  = 70, -- Trippy Flare
+	ShieldLoadAmmo_DionysusRangedTrait  = 80, -- Trippy Flare
 	ShieldLoadAmmo_AphroditeRangedTrait = 66, -- Passion Flare
-	ShieldLoadAmmo_ZeusRangedTrait      = 62, -- Thunder Flare
+	ShieldLoadAmmo_ZeusRangedTrait      = 72, -- Thunder Flare
 	ShieldLoadAmmo_AthenaRangedTrait    = 60, -- Phalanx Flare
 
 	---------------------------------------------------------------------
 	-- Dash (Rush)
 	---------------------------------------------------------------------
 	AthenaRushTrait            = 92, -- Divine Dash: deflect, the run-defining pick
-	PoseidonRushTrait          = 74, -- Tidal Dash
+	PoseidonRushTrait          = 86, -- Tidal Dash
 	DemeterRushTrait           = 70, -- Mistral Dash
 	AresRushTrait              = 70, -- Blade Dash
 	AphroditeRushTrait         = 68, -- Passion Dash
@@ -130,65 +134,18 @@ BoonAdvisor.Ratings.Base =
 	---------------------------------------------------------------------
 	-- Call (Shout)
 	---------------------------------------------------------------------
-	--[[
-		Calls, re-rated after a systematic error. I had every one of them at
-		55-66 on a blanket assumption that Calls are weak. Two independent
-		sources and the game's own tooltips say otherwise, and the reason is
-		mechanical: FOUR Calls grant outright Invulnerability, which under the
-		damage model (reductions are multiplicative; invulnerability negates)
-		is the strongest defensive effect available.
-
-		Tooltip text, verbatim from HelpText:
-		  Poseidon  "surge into foes while Invulnerable"
-		  Athena    "briefly makes you Invulnerable and Deflect all attacks"
-		  Ares      "turns you into an Invulnerable BladeRift"
-		  Hades     "turn Invisible" + stealth damage bonus  (rated above)
-		  Demeter   "winter vortex ... inflicting Chill"
-		  Dionysus  "inflicts Poison on foes all around you"
-		  Aphrodite "seeking projectile that inflicts Charm"
-		  Artemis   "fires a seeking arrow with <n>% Crit chance"
-		  Zeus      "lightning rapidly strike nearby foes"
-
-		Sources call Poseidon's Aid "by far the best Call in the game", and
-		note Athena's can reach ~20 seconds of invulnerability once pommed.
-		Demeter's and Dionysus' also apply Status Curses, which the Privileged
-		Status logic credits separately.
-	]]
-	PoseidonShoutTrait         = 86, -- Poseidon's Aid: invulnerable surge
-	AthenaShoutTrait           = 84, -- Athena's Aid: invulnerable + deflect all
-	AresShoutTrait             = 78, -- Ares' Aid: invulnerable Blade Rift
-	DemeterShoutTrait          = 74, -- Demeter's Aid: Chill vortex
-	AphroditeShoutTrait        = 72, -- Aphrodite's Aid: Charm
-	DionysusShoutTrait         = 70, -- Dionysus' Aid: Hangover AoE
-	ArtemisShoutTrait          = 70, -- Artemis' Aid: seeking crit arrow
-	ZeusShoutTrait             = 68, -- Zeus' Aid: lightning
-	--[[
-		Hades' Aid, corrected 55 -> 84. I had it as the WORST Call in the game;
-		it is generally held to be the best, and the game's own text agrees:
-
-		  "Your Wrath briefly makes you turn Invisible.
-		   Stealth Damage Bonus: ... / EXWrath: Turn Greater Invisible instead"
-
-		That is a large damage bonus AND an escape, on the same Call.
-
-		BUT it is never offered on a boon screen. It comes from the keepsake
-		HadesShoutKeepsake (TraitData.lua:18144, a GiftTrait); KeepsakeScripts
-		removes the trait when the keepsake is swapped out. The HadesUpgrade
-		entry in LootData is DebugOnly with empty Traits/WeaponUpgrades -- it
-		exists only for the Wrath portrait and voice lines, not as a loot pool.
-
-		So this number is inert for pick advice: the boon cannot appear as an
-		option. What actually matters, and already works, is that holding it
-		fills the Call slot (Slot = "Shout") and forfeits Smoldering Air, which
-		lists HadesShoutTrait in RequiredFalseTraits (TraitData.lua:36171).
-
-		I originally justified raising it with "if it is on screen it should be
-		near the top" -- which was wrong, because it is never on screen.
-
-		Note it forfeits Smoldering Air -- that duo lists HadesShoutTrait in its
-		RequiredFalseTraits (TraitData.lua:36171) -- which the exclusion term
-		already prices in.
-	]]
+	-- Strong one-bar damage leads the baseline. Defensive and boss-specific
+	-- value is added from the live build and Pact context.
+	ZeusShoutTrait             = 84, -- Zeus' Aid: strong one-bar damage
+	DionysusShoutTrait         = 82, -- Dionysus' Aid: Hangover AoE
+	AphroditeShoutTrait        = 80, -- Aphrodite's Aid: boss burst and Charm
+	AthenaShoutTrait           = 78, -- Athena's Aid: invulnerable + deflect all
+	AresShoutTrait             = 76, -- Ares' Aid: invulnerable Blade Rift
+	PoseidonShoutTrait         = 74, -- Poseidon's Aid: invulnerable surge
+	ArtemisShoutTrait          = 72, -- Artemis' Aid: seeking crit arrow
+	DemeterShoutTrait          = 70, -- Demeter's Aid: Chill vortex
+	-- Hades' Aid comes from the keepsake rather than a boon offer. Its slot and
+	-- exclusions still matter when evaluating a keepsake switch.
 	HadesShoutTrait            = 84, -- Hades' Aid
 
 	---------------------------------------------------------------------
@@ -200,16 +157,32 @@ BoonAdvisor.Ratings.Base =
 	DemeterRetaliateTrait      = 66, -- Frozen Touch
 	AresRetaliateTrait         = 66, -- Blood Frenzy
 	IncreasedDamageTrait       = 74, -- Ares damage bonus
-	CritBonusTrait             = 72, -- Artemis critical bonus
+	CritBonusTrait             = 78, -- Pressure Points
 	EnemyDamageTrait           = 60, -- Athena enemy damage reduction
 	TrapDamageTrait            = 58, -- Athena trap damage
 	MoveSpeedTrait             = 62, -- Hermes move speed
 	BonusDashTrait             = 82, -- Greater Evasion / extra dash
 	DodgeChanceTrait           = 74, -- Hermes dodge
-	RushSpeedBoostTrait        = 66, -- Hermes dash speed
+	RushSpeedBoostTrait        = 80, -- Hyper Sprint
 	RapidCastTrait             = 70, -- Hermes cast speed
 	AmmoReloadTrait            = 68, -- Hermes cast reload
 	SuperGenerationTrait       = 62, -- Call generation
+	AphroditeDeathTrait        = 60, -- Dying Lament
+	CastNovaTrait              = 76, -- Snow Burst
+	DefensiveSuperGenerationTrait = 66, -- Boiling Point
+	DoorHealTrait              = 56, -- After Party
+	EncounterStartOffenseBuffTrait = 60, -- Hydraulic Might
+	FountainDamageBonusTrait   = 76, -- Strong Drink
+	HealthRewardBonusTrait     = 68, -- Life Affirmation
+	LastStandDamageBonusTrait  = 74, -- Blood Frenzy
+	LowHealthDefenseTrait      = 60, -- Positive Outlook
+	OnEnemyDeathDamageInstanceBuffTrait = 70, -- Battle Rage
+	OnWrathDamageBuffTrait     = 76, -- Billowing Strength
+	PerfectDashBoltTrait       = 64, -- Lightning Reflexes
+	PreloadSuperGenerationTrait = 64, -- Proud Bearing
+	ProximityArmorTrait        = 68, -- Different League
+	RoomRewardBonusTrait       = 50, -- Ocean's Bounty
+	ZeroAmmoBonusTrait         = 72, -- Ravenous Will
 
 	-- Hermes (his screen offers only these, so leaving them unrated meant a
 	-- whole god's screen scored as flat filler)
@@ -218,36 +191,141 @@ BoonAdvisor.Ratings.Base =
 	RushRallyTrait             = 66,
 	AmmoReclaimTrait           = 64,
 	RegeneratingSuperTrait     = 62,
-	HermesShoutDodge           = 60,
+	HermesShoutDodge           = 76, -- Second Wind
 	ChamberGoldTrait           = 48, -- gold, not power
 
 	---------------------------------------------------------------------
-	-- Notable duos (override the category default)
+	-- All 28 Duo boons. Utility and awkward Duos are intentionally not allowed
+	-- to inherit the same value as run-defining combat payoffs.
 	---------------------------------------------------------------------
 	ImpactBoltTrait            = 92, -- Sea Storm
 	AresHomingTrait            = 92, -- Hunting Blades
-	JoltDurationTrait          = 90, -- Cold Fusion
-	StationaryRiftTrait        = 90, -- Freezing Vortex
-	CurseSickTrait             = 88, -- Curse of Longing
-	TriggerCurseTrait          = 86, -- Merciful End
-	LightningCloudTrait        = 86, -- Scintillating Feast
-	AmmoBoltTrait              = 84, -- Lightning Rod
-	PoisonCritVulnerabilityTrait = 84, -- Splitting Headache
-	AutoRetaliateTrait         = 78, -- Vengeful Mood
+	ArtemisBonusProjectileTrait = 92, -- Mirage Shot
+	TriggerCurseTrait          = 94, -- Merciful End
+	HeartsickCritDamageTrait   = 90, -- Heart Rend
+	RegeneratingCappedSuperTrait = 90, -- Smoldering Air
+	ArtemisReflectBuffTrait    = 88, -- Deadly Reversal
+	PoisonTickRateTrait        = 88, -- Curse of Nausea
+	DionysusAphroditeStackIncreaseTrait = 88, -- Low Tolerance
+	HomingLaserTrait           = 86, -- Crystal Clarity
+	PoisonCritVulnerabilityTrait = 86, -- Splitting Headache
+	ReboundingAthenaCastTrait  = 84, -- Lightning Phalanx
+	LightningCloudTrait        = 84, -- Scintillating Feast
+	IceStrikeArrayTrait        = 82, -- Ice Wine
+	BlizzardOrbTrait           = 80, -- Blizzard Shot
+	RaritySuperBoost           = 76, -- Exclusive Access
+	StatusImmunityTrait        = 72, -- Unshakable Mettle
+	ImprovedPomTrait           = 72, -- Sweet Nectar
+	CurseSickTrait             = 72, -- Curse of Longing
+	JoltDurationTrait          = 72, -- Cold Fusion
+	AmmoBoltTrait              = 70, -- Lightning Rod
+	AutoRetaliateTrait         = 68, -- Vengeful Mood
+	StationaryRiftTrait        = 68, -- Freezing Vortex
+	CastBackstabTrait          = 66, -- Parting Shot
+	NoLastStandRegenerationTrait = 64, -- Stubborn Roots
+	PoseidonAresProjectileTrait = 64, -- Curse of Drowning
+	SlowProjectileTrait        = 62, -- Calculated Risk
+	SelfLaserTrait             = 60, -- Cold Embrace
 	MarkedDropGoldTrait        = 72, -- Wanted Dead
 
 	---------------------------------------------------------------------
-	-- Notable same-god upgrade / legendary boons
+	-- All 11 same-god Legendary boons.
 	---------------------------------------------------------------------
-	ZeusChargedBoltTrait       = 88, -- Splitting Bolt
+	ZeusChargedBoltTrait       = 90, -- Splitting Bolt
+	ShieldHitTrait             = 90, -- Divine Protection
+	DionysusComboVulnerability = 88, -- Black Out
+	MoreAmmoTrait              = 88, -- Fully Loaded
+	InstantChillKill           = 86, -- Winter Harvest
+	CharmTrait                 = 84, -- Unhealthy Fixation
+	AresCursedRiftTrait        = 84, -- Vicious Cycle
+	UnstoredAmmoDamageTrait    = 82, -- Bad News
+	DoubleCollisionTrait       = 58, -- Second Wave
+	MagnetismTrait             = 55, -- Greater Recall
+	FishingTrait               = 42, -- Huge Catch: meta progression, no combat
+
+	---------------------------------------------------------------------
+	-- Same-god gated upgrades.
+	---------------------------------------------------------------------
+	ZeusLightningDebuff        = 86, -- Static Discharge
+	ZeusBonusBoltTrait         = 84, -- Double Strike
+	ArtemisSupportingFireTrait = 78, -- Support Fire
+	CritVulnerabilityTrait     = 78, -- Hunter's Mark
+	SlamExplosionTrait         = 78, -- Breaking Wave
+	BonusCollisionTrait        = 74, -- Typhoon's Fury
 	AresLongCurseTrait         = 78, -- Impending Doom
-	AresLoadCurseTrait         = 82, -- Dire Misfortune
+	ArtemisAmmoExitTrait       = 76, -- Exit Wounds
 	ArtemisCriticalTrait       = 76, -- Clean Kill
-	CritVulnerabilityTrait     = 74, -- Hunter's Mark
+	DemeterRangedBonusTrait    = 76, -- Glacial Glare
+	MaximumChillBlast          = 76, -- Arctic Blast
+	MaximumChillBonusSlow      = 76, -- Killing Freeze
+	SlipperyTrait              = 76, -- Razor Shoals
+	AresLoadCurseTrait         = 82, -- Dire Misfortune
 	AphroditeWeakenTrait       = 74, -- Sweet Surrender
-	MoreAmmoTrait              = 72, -- Fully Loaded
-	ZeusBonusBoltTrait         = 72, -- Double Strike
+	AthenaBackstabDebuffTrait  = 72, -- Blinding Flash
+	BossDamageTrait            = 72, -- Wave Pounding
+	PoseidonShoutDurationTrait = 72, -- Rip Current
+	DionysusPoisonPowerTrait   = 72, -- Bad Influence
+	CriticalBufferMultiplierTrait = 72, -- Hide Breaker
+	ZeusBoltAoETrait           = 70, -- High Voltage
 	AphroditePotencyTrait      = 70, -- Broken Resolve
+	DionysusSlowTrait          = 68, -- Numbing Sensation
+	AresAoETrait               = 68, -- Black Metal
+	ZeusBonusBounceTrait       = 68, -- Storm Lightning
+	DionysusSpreadTrait        = 66, -- Peer Pressure
+	CriticalSuperGenerationTrait = 64, -- Hunter Instinct
+	AphroditeDurationTrait     = 62, -- Empty Inside
+	AphroditeRangedBonusTrait  = 60, -- Blown Kiss
+	DionysusDefenseTrait       = 60, -- High Tolerance
+	AresDragTrait              = 58, -- Engulfing Vortex
+	AthenaShieldTrait          = 82, -- Brilliant Riposte
+	SpeedDamageTrait           = 88, -- Rush Delivery
+}
+
+-- A boon can be excellent while gaining almost nothing from another Pom.
+-- These values describe the next level's marginal impact before the game's
+-- own diminishing-return curve is applied by ScorePom.
+BoonAdvisor.Ratings.PomValue =
+{
+	ZeusLightningDebuff = 92,
+	ZeusBonusBoltTrait = 88,
+	ZeusWeaponTrait = 86,
+	ZeusSecondaryTrait = 84,
+	DionysusWeaponTrait = 84,
+	DionysusSecondaryTrait = 86,
+	AresWeaponTrait = 82,
+	AresSecondaryTrait = 84,
+	AresLongCurseTrait = 86,
+	AresLoadCurseTrait = 88,
+	CritVulnerabilityTrait = 88,
+	ArtemisWeaponTrait = 82,
+	ArtemisSecondaryTrait = 82,
+	AphroditeWeaponTrait = 82,
+	AphroditeSecondaryTrait = 82,
+	DionysusRangedTrait = 84,
+	ImpactBoltTrait = 86,
+	ZeusChargedBoltTrait = 84,
+
+	-- Mostly utility, safety, or effects whose defining benefit does not scale.
+	AthenaRushTrait = 34,
+	PoseidonRushTrait = 46,
+	AthenaShoutTrait = 44,
+	AresShoutTrait = 48,
+	PoseidonShoutTrait = 52,
+	ZeusShoutTrait = 68,
+	DionysusShoutTrait = 68,
+	AphroditeShoutTrait = 60,
+	ArtemisShoutTrait = 56,
+	DemeterShoutTrait = 52,
+	MoveSpeedTrait = 40,
+	RushSpeedBoostTrait = 42,
+	HermesWeaponTrait = 48,
+	HermesSecondaryTrait = 48,
+	RushRallyTrait = 44,
+	RapidCastTrait = 46,
+	AmmoReloadTrait = 46,
+	DodgeChanceTrait = 48,
+	EnemyDamageTrait = 38,
+	TrapDamageTrait = 30,
 }
 
 --[[
@@ -502,6 +580,7 @@ BoonAdvisor.Ratings.Archetypes =
 			"ArtemisWeaponTrait", "ArtemisSecondaryTrait", "ArtemisRangedTrait",
 			"ArtemisShoutTrait", "PoseidonWeaponTrait", "PoseidonSecondaryTrait",
 			"PoseidonRangedTrait", "PoseidonRushTrait", "PoseidonShoutTrait" },
+		Foundation = { "AphroditeRangedTrait" },
 		Payoff = "ArtemisBonusProjectileTrait", -- Mirage Shot
 		CoreBonus = 18,
 		ObjectiveBonus = { Speed = 6 },
@@ -674,7 +753,7 @@ BoonAdvisor.Ratings.Hammers =
 	SwordThrustWaveTrait            = 82, -- Piercing Wave
 	SwordSecondaryDoubleAttackTrait = 84, -- Double Nova
 	SwordHealthBufferDamageTrait    = 62, -- Breaching Slash
-	SwordDoubleDashAttackTrait      = 80, -- Double Edge: repeatedly called the best sword hammer
+	SwordDoubleDashAttackTrait      = 88, -- Double Edge
 	SwordCriticalTrait              = 70, -- Cruel Thrust
 	SwordBackstabTrait              = 60, -- Shadow Slash
 	SwordCursedLifeStealTrait       = 58, -- Cursed Slash
@@ -682,28 +761,28 @@ BoonAdvisor.Ratings.Hammers =
 	SwordBlinkTrait                 = 72, -- Dash Nova
 
 	-- Coronacht
-	BowDoubleShotTrait              = 72, -- Twin Shot
+	BowDoubleShotTrait              = 88, -- Twin Shot
 	BowLongRangeDamageTrait         = 62, -- Sniper Shot: only at range
 	BowSlowChargeDamageTrait        = 70, -- Explosive Shot
 	BowTapFireTrait                 = 78, -- Flurry Shot
 	BowPenetrationTrait             = 68, -- Piercing Volley
 	BowPowerShotTrait               = 84, -- Perfect Shot
 	BowSecondaryBarrageTrait        = 74, -- Relentless Volley
-	BowTripleShotTrait              = 76, -- Triple Shot
+	BowTripleShotTrait              = 80, -- Triple Shot
 	BowSecondaryFocusedFireTrait    = 70, -- Charged Volley
-	BowChainShotTrait               = 72, -- Chain Shot
-	BowCloseAttackTrait             = 74, -- Point-Blank Shot
+	BowChainShotTrait               = 64, -- Chain Shot
+	BowCloseAttackTrait             = 78, -- Point-Blank Shot
 	BowConsecutiveBarrageTrait      = 72, -- Concentrated Volley
 
 	-- Shield of Chaos
 	ShieldDashAOETrait              = 66, -- Dashing Wallop
-	ShieldRushProjectileTrait       = 70, -- Charged Shot
+	ShieldRushProjectileTrait       = 86, -- Charged Shot
 	ShieldThrowFastTrait            = 82, -- Dread Flight
 	ShieldThrowCatchExplode         = 76, -- Explosive Return
-	ShieldChargeHealthBufferTrait   = 64, -- Breaching Rush
+	ShieldChargeHealthBufferTrait   = 78, -- Breaching Rush
 	ShieldChargeSpeedTrait          = 62, -- Sudden Rush
 	ShieldBashDamageTrait           = 72, -- Pulverizing Blow
-	ShieldPerfectRushTrait          = 74, -- Minotaur Rush
+	ShieldPerfectRushTrait          = 82, -- Minotaur Rush
 	ShieldThrowElectiveCharge       = 68, -- Charged Flight
 	ShieldThrowEmpowerTrait         = 78, -- Empowering Flight
 	ShieldBlockEmpowerTrait         = 80, -- Ferocious Guard: the shield's standout hammer
@@ -711,8 +790,8 @@ BoonAdvisor.Ratings.Hammers =
 
 	-- Varatha
 	SpearReachAttack                = 66, -- Extending Jab
-	SpearAutoAttack                 = 76, -- Flurry Jab
-	SpearThrowExplode               = 74, -- Exploding Launcher
+	SpearAutoAttack                 = 88, -- Flurry Jab
+	SpearThrowExplode               = 86, -- Exploding Launcher
 	SpearThrowBounce                = 70, -- Chain Skewer
 	SpearThrowPenetrate             = 68, -- Breaching Skewer
 	SpearThrowCritical              = 78, -- Vicious Skewer
@@ -721,30 +800,30 @@ BoonAdvisor.Ratings.Hammers =
 	SpearDashMultiStrike            = 66, -- Serrated Point
 	SpearThrowElectiveCharge        = 70, -- Charged Skewer
 	SpearSpinChargeAreaDamageTrait  = 72, -- Flaring Spin
-	SpearAttackPhalanxTrait         = 80, -- Triple Jab
+	SpearAttackPhalanxTrait         = 76, -- Triple Jab
 
 	-- Exagryph
-	GunSlowGrenade                  = 62, -- Targeting System
+	GunSlowGrenade                  = 80, -- Targeting System
 	GunMinigunTrait                 = 74, -- Flurry Fire
 	GunShotgunTrait                 = 76, -- Spread Fire
 	GunExplodingSecondaryTrait      = 78, -- Rocket Bomb
 	GunGrenadeFastTrait             = 74, -- Triple Bomb
 	GunArmorPenerationTrait         = 66, -- Piercing Fire
-	GunInfiniteAmmoTrait            = 84, -- Delta Chamber
+	GunInfiniteAmmoTrait            = 72, -- Delta Chamber
 	GunGrenadeClusterTrait          = 84, -- Cluster Bomb: the rail's best hammer
-	GunGrenadeDropTrait             = 64, -- Hazard Bomb
+	GunGrenadeDropTrait             = 86, -- Hazard Bomb
 	GunHeavyBulletTrait             = 72, -- Explosive Fire
 	GunChainShotTrait               = 68, -- Ricochet Fire
-	GunHomingBulletTrait            = 70, -- Seeking Fire
+	GunHomingBulletTrait            = 54, -- Seeking Fire
 
 	-- Malphon
 	FistReachAttackTrait            = 68, -- Long Knuckle
-	FistDashAttackHealthBufferTrait = 64, -- Breaching Cross
+	FistDashAttackHealthBufferTrait = 86, -- Breaching Cross
 	FistTeleportSpecialTrait        = 70, -- Rush Kick
 	FistDoubleDashSpecialTrait      = 74, -- Explosive Upper
-	FistChargeSpecialTrait          = 76, -- Flying Cutter
+	FistChargeSpecialTrait          = 68, -- Flying Cutter
 	FistKillTrait                   = 66, -- Draining Cutter
-	FistSpecialLandTrait            = 72, -- Quake Cutter
+	FistSpecialLandTrait            = 52, -- Quake Cutter
 	FistAttackFinisherTrait         = 74, -- Rolling Knuckle
 	FistConsecutiveAttackTrait      = 78, -- Concentrated Knuckle
 	FistSpecialFireballTrait        = 72, -- Kinetic Launcher
@@ -754,7 +833,7 @@ BoonAdvisor.Ratings.Hammers =
 	-- Aspect-specific hammers: only offered when you hold that aspect.
 	SpearSpinTravelDurationTrait    = 78, -- Winged Serpent
 	SwordConsecrationBoostTrait     = 82, -- Greater Consecration
-	BowBondBoostTrait               = 76, -- Repulse Shot
+	BowBondBoostTrait               = 48, -- Repulse Shot
 	ShieldLoadAmmoBoostTrait        = 80,
 	FistDetonateBoostTrait          = 78,
 	GunLoadedGrenadeBoostTrait      = 78,
@@ -792,6 +871,12 @@ BoonAdvisor.Ratings.HammerAspectMod =
 	{
 		BowSecondaryBarrageTrait   = 10,
 		BowConsecutiveBarrageTrait = 8,
+		BowTripleShotTrait         = 12,
+		BowCloseAttackTrait        = 10,
+	},
+	ShieldRushBonusProjectileTrait = -- Aspect of Chaos
+	{
+		ShieldThrowFastTrait = -24,
 	},
 	ShieldTwoShieldTrait = -- Aspect of Zeus: the Special is everything
 	{
@@ -823,6 +908,7 @@ BoonAdvisor.Ratings.HammerAspectMod =
 		SpearSpinDamageRadius          = 16, -- Massive Spin
 		SpearSpinChargeAreaDamageTrait = 10,
 		SpearThrowExplode              = -6,
+		SpearThrowElectiveCharge       = 22,
 	},
 	SpearWeaveTrait = -- Aspect of Hades: wants Exploding Launcher
 	{
@@ -837,6 +923,7 @@ BoonAdvisor.Ratings.HammerAspectMod =
 	{
 		GunGrenadeClusterTrait     = 10,
 		GunExplodingSecondaryTrait = 8,
+		GunInfiniteAmmoTrait       = 10,
 	},
 	SwordConsecrationTrait = -- Aspect of Arthur: slow, heavy attacks
 	{
@@ -845,6 +932,7 @@ BoonAdvisor.Ratings.HammerAspectMod =
 		SwordThrustWaveTrait            = 8,
 		SwordTwoComboTrait              = -8,
 		SwordSecondaryDoubleAttackTrait = -6,
+		SwordBackstabTrait              = 24,
 	},
 	GunLoadedGrenadeTrait = -- Aspect of Lucifer
 	{
@@ -856,6 +944,18 @@ BoonAdvisor.Ratings.HammerAspectMod =
 	{
 		FistConsecutiveAttackTrait = 10,
 		FistAttackFinisherTrait    = 8,
+	},
+}
+
+-- Hammers can reinforce one another even when the game does not encode the
+-- interaction as an eligibility prerequisite.
+BoonAdvisor.Ratings.HammerPairings =
+{
+	{
+		A = "ShieldChargeHealthBufferTrait",
+		B = "ShieldPerfectRushTrait",
+		Bonus = 8,
+		Reason = "pairs armor break with the Bull Rush window",
 	},
 }
 
@@ -984,4 +1084,105 @@ BoonAdvisor.Ratings.AspectAffinity =
 	-- move (Achilles Special / Poseidon Sword Attack) instead of the damage.
 	SpearTeleportTrait             = { Ranged = 12 }, -- Aspect of Achilles
 	DislodgeAmmoTrait              = { Ranged = 12 }, -- Aspect of Poseidon
+}
+
+-- Hit frequency changes which damage model fits a slot. Flat and stacking
+-- effects want many hits; large percentage multipliers want fewer heavy hits.
+-- Weapon defaults cover Zagreus aspects, while aspect rows override only the
+-- slots whose cadence materially changes.
+BoonAdvisor.Ratings.WeaponHitClass =
+{
+	FistWeapon = { Melee = "fast", Secondary = "slow" },
+	GunWeapon = { Melee = "fast", Secondary = "slow" },
+	BowWeapon = { Melee = "slow", Secondary = "fast" },
+	ShieldWeapon = { Melee = "slow", Secondary = "slow" },
+	SpearWeapon = { Melee = "medium", Secondary = "slow" },
+	SwordWeapon = { Melee = "medium", Secondary = "slow" },
+}
+
+BoonAdvisor.Ratings.AspectHitClass =
+{
+	GunManualReloadTrait = { Melee = "slow" },       -- Hestia reload shot
+	BowMarkHomingTrait = { Secondary = "fast" },     -- Chiron volley
+	BowBondTrait = { Secondary = "fast" },           -- Rama shared suffering
+	ShieldTwoShieldTrait = { Secondary = "fast" },   -- Zeus spinning shield
+	ShieldRushBonusProjectileTrait = { Secondary = "fast" }, -- Chaos volley
+	FistWeaveTrait = { Secondary = "fast" },         -- Demeter multi-hit upper
+	GunLoadedGrenadeTrait = { Secondary = "fast" },  -- Lucifer Hellfire pulses
+	SwordConsecrationTrait = { Melee = "slow" },      -- Arthur heavy swings
+}
+
+BoonAdvisor.Ratings.HitClassBonus =
+{
+	fast =
+	{
+		ZeusWeaponTrait = 10, ZeusSecondaryTrait = 9,
+		DionysusWeaponTrait = 8, DionysusSecondaryTrait = 8,
+		AresWeaponTrait = 4, AresSecondaryTrait = 4,
+		AphroditeWeaponTrait = -5, AphroditeSecondaryTrait = -5,
+		ArtemisWeaponTrait = -3, ArtemisSecondaryTrait = -3,
+	},
+	slow =
+	{
+		AphroditeWeaponTrait = 8, AphroditeSecondaryTrait = 8,
+		ArtemisWeaponTrait = 6, ArtemisSecondaryTrait = 6,
+		AthenaWeaponTrait = 4, AthenaSecondaryTrait = 4,
+		DemeterWeaponTrait = 4, DemeterSecondaryTrait = 4,
+		PoseidonWeaponTrait = 3, PoseidonSecondaryTrait = 3,
+		ZeusWeaponTrait = -9, ZeusSecondaryTrait = -9,
+		DionysusWeaponTrait = -7, DionysusSecondaryTrait = -7,
+	},
+}
+
+-- Aspect-specific mechanical interactions that are narrower than slot
+-- affinity or hit cadence.
+BoonAdvisor.Ratings.AspectTraitMod =
+{
+	FistBaseUpgradeTrait = { DemeterWeaponTrait = 8 },
+	FistWeaveTrait = { DemeterWeaponTrait = 6 },
+	FistVacuumTrait = { DemeterWeaponTrait = 6 },
+	FistDetonateTrait = { DemeterWeaponTrait = 5 },
+	BowMarkHomingTrait = { DionysusSecondaryTrait = 5 },
+	SwordBaseUpgradeTrait = { ZeusRushTrait = -8 },
+	SwordCriticalParryTrait = { ZeusRushTrait = -8 },
+	DislodgeAmmoTrait = { ZeusRushTrait = -8 },
+}
+
+-- Common mechanical interactions that are valuable without being a Duo
+-- prerequisite. Each row is symmetric: taking a member of either side gains
+-- the bonus when the run already holds a member of the other side.
+BoonAdvisor.Ratings.Pairings =
+{
+	{
+		A = { "CritVulnerabilityTrait" },
+		B = { "CritBonusTrait", "ArtemisWeaponTrait", "ArtemisSecondaryTrait",
+			"ArtemisRangedTrait", "ArtemisRushTrait" },
+		Bonus = 8, Reason = "turns your crits into marked damage",
+	},
+	{
+		A = { "ZeusLightningDebuff" },
+		B = { "ZeusWeaponTrait", "ZeusSecondaryTrait", "ZeusRangedTrait",
+			"ZeusRushTrait", "ZeusShoutTrait" },
+		Bonus = 7, Reason = "adds Jolted to your lightning",
+	},
+	{
+		A = { "AresLoadCurseTrait" },
+		B = { "AresWeaponTrait", "AresSecondaryTrait" },
+		Bonus = 7, Reason = "stacks Doom with repeated hits",
+	},
+	{
+		A = { "MaximumChillBlast", "MaximumChillBonusSlow" },
+		B = { "DemeterWeaponTrait", "DemeterSecondaryTrait", "DemeterRushTrait" },
+		Bonus = 6, Reason = "converts rapid Chill stacks into payoff",
+	},
+	{
+		A = { "DionysusPoisonPowerTrait", "DionysusSpreadTrait" },
+		B = { "DionysusWeaponTrait", "DionysusSecondaryTrait" },
+		Bonus = 6, Reason = "improves your Hangover engine",
+	},
+	{
+		A = { "TriggerCurseTrait" },
+		B = { "AthenaRushTrait" },
+		Bonus = 8, Reason = "rapidly triggers Merciful End",
+	},
 }

@@ -280,13 +280,23 @@ local function keepsakeCandidateScore( traitName, context, candidateKeepsake )
 	local pact = BoonAdvisor.PactBonus( traitName )
 	local slam = BoonAdvisor.KnockbackBonus( traitName )
 	local mirror = BoonAdvisor.MetaBonus( traitName )
-	return score + pact + slam + mirror
+	local hit = BoonAdvisor.HitStyleBonus( traitName )
+	local aspectTrait = BoonAdvisor.AspectTraitBonus( traitName )
+	local pairing = BoonAdvisor.MechanicalPairingBonus( traitName, nil )
+	local depth = BoonAdvisor.DepthTraitBonus( traitName )
+	return score + pact + slam + mirror + hit + aspectTrait + pairing + depth
 end
 
 local function godCandidateValue( forced, context, candidateKeepsake )
 	if BoonAdvisor.GetGodCandidateTraits == nil then return 60, nil, {} end
 	local values, candidates, bestName, bestValue = {}, {}, nil, nil
-	for _, traitName in ipairs( BoonAdvisor.GetGodCandidateTraits( forced ) or {} ) do
+	local candidateArgs = {}
+	if context ~= nil and context.CurrentName == "HadesShoutKeepsake"
+		and candidateKeepsake ~= "HadesShoutKeepsake" then
+		candidateArgs.IgnoreOccupiedTrait = "HadesShoutTrait"
+	end
+	for _, traitName in ipairs( BoonAdvisor.GetGodCandidateTraits(
+		forced, candidateArgs ) or {} ) do
 		local value = keepsakeCandidateScore( traitName, context, candidateKeepsake )
 		candidates[traitName] = true
 		table.insert( values, value )
@@ -456,9 +466,14 @@ local function scoreUtilityKeepsake( traitName, context )
 				if not BoonAdvisor.SlotFilled( slot ) then empty = empty + 1 end
 			end
 		end
+		local heavyAspect = BoonAdvisor.HeroHasTrait( "SwordConsecrationTrait" )
+			or BoonAdvisor.HeroHasTrait( "GunManualReloadTrait" )
+			or BoonAdvisor.HeroHasTrait( "BowBondTrait" )
 		score = scores.DamageBase + empty * scores.ShackleEmptySlotBonus
 			- ( 3 - empty ) * scores.ShackleFilledSlotPenalty + rankBonus
-		reason = empty > 0 and empty .. " unbooned core slot(s) gain damage"
+			+ ( heavyAspect and scores.ShackleHeavyAspectBonus or 0 )
+		reason = heavyAspect and empty > 0 and "strong base damage on this aspect"
+			or empty > 0 and empty .. " unbooned core slot(s) gain damage"
 			or "all three core slots are filled"
 	elseif traitName == "ShieldBossTrait" then
 		score = scores.DefenseBase + rankBonus + context.BossWeight * scores.AcornBossBonus

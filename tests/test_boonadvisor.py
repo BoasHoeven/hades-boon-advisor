@@ -18,11 +18,19 @@ except ImportError:
 
 def find_game():
     """Locate Hades/Content. Override with the HADES_PATH env var."""
+    def content_candidates(root):
+        if root.rstrip("\\/").endswith("Content"):
+            return [root]
+        return [
+            os.path.join(root, "Content"),
+            os.path.join(root, "Game.macOS.app", "Contents", "Resources", "Content"),
+        ]
+
     env = os.environ.get("HADES_PATH")
     if env:
-        cand = env if env.rstrip("\\/").endswith("Content") else os.path.join(env, "Content")
-        if os.path.isfile(os.path.join(cand, "Scripts", "RoomManager.lua")):
-            return cand
+        for cand in content_candidates(env):
+            if os.path.isfile(os.path.join(cand, "Scripts", "RoomManager.lua")):
+                return cand
     home = os.path.expanduser("~")
     roots = [
         r"C:\Program Files (x86)\Steam\steamapps\common\Hades",
@@ -33,9 +41,9 @@ def find_game():
         os.path.join(home, "Library/Application Support/Steam/steamapps/common/Hades"),
     ]
     for r in roots:
-        cand = os.path.join(r, "Content")
-        if os.path.isfile(os.path.join(cand, "Scripts", "RoomManager.lua")):
-            return cand
+        for cand in content_candidates(r):
+            if os.path.isfile(os.path.join(cand, "Scripts", "RoomManager.lua")):
+                return cand
     sys.exit("Could not find Hades. Set HADES_PATH to your install folder.")
 
 
@@ -314,7 +322,8 @@ check(not missing_fx,
       % (len(effect_keys), "" if not missing_fx else " -- MISSING %s" % missing_fx))
 
 print("\n=== every rating name is a real trait ===")
-for table_name in ("Base", "Hammers", "AspectAffinity"):
+for table_name in ("Base", "Hammers", "AspectAffinity", "PomValue",
+                   "AspectHitClass", "AspectTraitMod"):
     keys = list(lua.eval("BoonAdvisor.Ratings.%s" % table_name).keys())
     missing = [k for k in keys if traitdata[k] is None]
     check(not missing, "%s: %d keys, all real%s"
@@ -358,12 +367,75 @@ for i in range(1, len(arch) + 1):
     for j in range(1, len(core) + 1):
         if traitdata[core[j]] is None:
             bad.append("%s.Core=%s" % (a["Name"], core[j]))
+    foundation = a["Foundation"]
+    if foundation is not None:
+        for j in range(1, len(foundation) + 1):
+            if traitdata[foundation[j]] is None:
+                bad.append("%s.Foundation=%s" % (a["Name"], foundation[j]))
 check(not bad, "Archetypes: all names real%s" % ("" if not bad else " BAD %s" % bad))
+
+pairing_bad = []
+for pairing in lua.eval("BoonAdvisor.Ratings.Pairings").values():
+    for side in ("A", "B"):
+        for name in pairing[side].values():
+            if traitdata[name] is None:
+                pairing_bad.append(name)
+check(not pairing_bad, "mechanical pairing names are real%s" %
+      ("" if not pairing_bad else " -- MISSING %s" % pairing_bad))
+
+aspect_trait_bad = []
+for aspect, bonuses in lua.eval("BoonAdvisor.Ratings.AspectTraitMod").items():
+    for name in bonuses.keys():
+        if traitdata[name] is None:
+            aspect_trait_bad.append("%s->%s" % (aspect, name))
+check(not aspect_trait_bad, "aspect-specific boon interactions use real traits%s" %
+      ("" if not aspect_trait_bad else " -- MISSING %s" % aspect_trait_bad))
+
+# Duplicate keys in a Lua literal silently overwrite the earlier value. Catch
+# that source-level error because inspecting the loaded table cannot.
+ratings_source = io.open(os.path.join(MOD, "BA_Ratings.lua"),
+                         encoding="utf-8", errors="replace").read()
+base_source = ratings_source.split("BoonAdvisor.Ratings.Base =", 1)[1].split(
+    "-- A boon can be excellent", 1)[0]
+base_keys = re.findall(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*=", base_source, re.M)
+duplicate_base = sorted({name for name in base_keys if base_keys.count(name) > 1})
+check(not duplicate_base, "Base rating literal has no duplicate keys%s" %
+      ("" if not duplicate_base else " -- DUPLICATE %s" % duplicate_base))
+
+linked = lua.eval("BoonAdvisor.GetLinkedIndex()")
+linked_kinds = {"Duo": [], "Legendary": [], "Upgrade": []}
+for i in range(1, len(linked) + 1):
+    linked_kinds[linked[i]["Kind"]].append(linked[i]["Name"])
+missing_linked_ratings = [name for kind in ("Duo", "Legendary", "Upgrade")
+                          for name in linked_kinds[kind]
+                          if lua.eval("BoonAdvisor.Ratings.Base")[name] is None]
+check(len(linked_kinds["Duo"]) == 28 and len(linked_kinds["Legendary"]) == 11,
+      "inheritance classifies all 28 Duo and 11 Legendary boons")
+check(not missing_linked_ratings,
+      "every Duo, Legendary, and gated upgrade has an explicit value%s" %
+      ("" if not missing_linked_ratings else " -- MISSING %s" % missing_linked_ratings))
+
+base_ratings = lua.eval("BoonAdvisor.Ratings.Base")
+lootdata = lua.eval("LootData")
+unrated_direct_passives = []
+for loot_name in ("ZeusUpgrade", "PoseidonUpgrade", "AthenaUpgrade",
+                  "AphroditeUpgrade", "AresUpgrade", "ArtemisUpgrade",
+                  "DionysusUpgrade", "DemeterUpgrade", "HermesUpgrade"):
+    direct = lootdata[loot_name]["Traits"]
+    if direct is None:
+        continue
+    for i in range(1, len(direct) + 1):
+        name = direct[i]
+        if traitdata[name]["Slot"] is None and base_ratings[name] is None:
+            unrated_direct_passives.append(name)
+check(not unrated_direct_passives,
+      "every directly offered non-slot god boon has an explicit value%s" %
+      ("" if not unrated_direct_passives
+       else " -- MISSING %s" % sorted(set(unrated_direct_passives))))
 
 # A valid payoff name is not enough: each prerequisite group for that payoff
 # must be represented in the archetype's Core. This catches routes that can
 # score a duo/legendary highly while steering toward boons that cannot unlock it.
-linked = lua.eval("BoonAdvisor.GetLinkedIndex()")
 payoff_requirements = {}
 for i in range(1, len(linked) + 1):
     entry = linked[i]
@@ -397,6 +469,14 @@ for aspect in list(ham.keys()):
             bad.append("%s->%s" % (aspect, h))
 check(not bad, "HammerAspectMod: all names real%s" % ("" if not bad else " BAD %s" % bad))
 
+hammer_pairing_bad = []
+for pairing in lua.eval("BoonAdvisor.Ratings.HammerPairings").values():
+    for key in ("A", "B"):
+        if traitdata[pairing[key]] is None:
+            hammer_pairing_bad.append(pairing[key])
+check(not hammer_pairing_bad, "hammer pairing names are real%s" %
+      ("" if not hammer_pairing_bad else " BAD %s" % hammer_pairing_bad))
+
 aspects = {n: d for n, d in names.items()
            if d.startswith("Aspect of") and traitdata[n] is not None
            and not n.endswith("_Max")}
@@ -417,6 +497,15 @@ check(max(rows.items(), key=lambda kv: kv[1]["Score"])[0] == "AthenaRushTrait",
 ladder = [boon("ZeusWeaponTrait", r)["Score"] for r in ("Common", "Rare", "Epic", "Heroic")]
 check(all(a < b for a, b in zip(ladder, ladder[1:])), "rarity ladder rises %s" % ladder)
 
+check(base_ratings["PoseidonRushTrait"] >= 84
+      and base_ratings["DionysusRangedTrait"] > base_ratings["DemeterRangedTrait"]
+      and base_ratings["ZeusRangedTrait"] >= 70,
+      "core dash and cast values match the audited balance ordering")
+check(base_ratings["ZeusShoutTrait"] > base_ratings["PoseidonShoutTrait"]
+      and base_ratings["DionysusShoutTrait"] > base_ratings["PoseidonShoutTrait"]
+      and base_ratings["AphroditeShoutTrait"] > base_ratings["PoseidonShoutTrait"],
+      "Calls favor strong one-bar damage and Aphrodite's boss burst")
+
 base = boon("RetaliateWeaponTrait")
 build("ZeusWeaponTrait", "AresWeaponTrait")
 duo = boon("RetaliateWeaponTrait")
@@ -424,6 +513,70 @@ check("Vengeful Mood" in duo["Reason"] and duo["Score"] > base["Score"],
       "duo completion detected and scored higher (%d -> %d)" % (base["Score"], duo["Score"]))
 build()
 check("enables" not in base["Reason"], "no phantom duo on an empty build")
+
+check(lua.eval("BoonAdvisor.KindOf")("FishingTrait") == "Legendary",
+      "Huge Catch is classified as Legendary, not as a Duo")
+huge_common = boon("FishingTrait", "Common")["RawScore"]
+huge_legendary = boon("FishingTrait", "Legendary")["RawScore"]
+check(abs(huge_common - huge_legendary) < 0.001,
+      "fixed-rarity boons do not receive a second Legendary rarity bonus")
+
+linked_scale = lua.eval("BoonAdvisor.LinkedValueScale")
+check(linked_scale("TriggerCurseTrait") > linked_scale("AmmoBoltTrait"),
+      "Merciful End completion is worth more than Lightning Rod completion")
+
+build("GunGrenadeSelfEmpowerTrait", "ZeusWeaponTrait")
+false_core = lua.eval("BoonAdvisor.ArchetypeBonus")(
+    "AphroditeSecondaryTrait", None)[0]
+real_core = lua.eval("BoonAdvisor.ArchetypeBonus")(
+    "ZeusBonusBoltTrait", None)[0]
+check(false_core == 0 and real_core > 0,
+      "an archetype core bonus requires a real payoff prerequisite")
+
+build("ZeusWeaponTrait")
+pairing_gain = lua.eval("BoonAdvisor.MechanicalPairingBonus")(
+    "ZeusLightningDebuff", None)[0]
+check(pairing_gain > 0, "mechanical boon pairings add value outside Duo gates")
+
+build("TriggerCurseTrait")
+merciful_dash = lua.eval("BoonAdvisor.MechanicalPairingBonus")(
+    "AthenaRushTrait", None)[0]
+check(merciful_dash > 0, "Divine Dash gains value as a Merciful End trigger")
+
+aspect_trait_bonus = lua.eval("BoonAdvisor.AspectTraitBonus")
+build("FistBaseUpgradeTrait")
+fist_chill = aspect_trait_bonus("DemeterWeaponTrait")[0]
+build("BowMarkHomingTrait")
+chiron_hangover = aspect_trait_bonus("DionysusSecondaryTrait")[0]
+build("SwordBaseUpgradeTrait")
+normal_sword_thunder_dash = aspect_trait_bonus("ZeusRushTrait")[0]
+build("SwordConsecrationTrait")
+arthur_thunder_dash = aspect_trait_bonus("ZeusRushTrait")[0]
+check(fist_chill > 0 and chiron_hangover > 0,
+      "fists Chill and Chiron Hangover receive their mechanical aspect value")
+check(normal_sword_thunder_dash < arthur_thunder_dash,
+      "Thunder Dash is penalized on dash-strike swords but not Arthur")
+
+build("ZeusLightningDebuff", "AthenaRushTrait")
+check(pom("ZeusLightningDebuff")["RawScore"] > pom("AthenaRushTrait")["RawScore"],
+      "Pom scoring values marginal damage gain over non-scaling utility")
+
+lua.execute("__weapon = 'FistWeapon'")
+build()
+fast_zeus = lua.eval("BoonAdvisor.HitStyleBonus")("ZeusWeaponTrait")[0]
+fast_aphro = lua.eval("BoonAdvisor.HitStyleBonus")("AphroditeWeaponTrait")[0]
+lua.execute("__weapon = 'GunWeapon'")
+build("GunManualReloadTrait")
+slow_zeus = lua.eval("BoonAdvisor.HitStyleBonus")("ZeusWeaponTrait")[0]
+slow_aphro = lua.eval("BoonAdvisor.HitStyleBonus")("AphroditeWeaponTrait")[0]
+check(fast_zeus > fast_aphro and slow_aphro > slow_zeus,
+      "fast slots favor on-hit damage while Hestia favors large multipliers")
+lua.execute("__weapon = 'BowWeapon'")
+build()
+
+check(finalize(120) > finalize(105) > finalize(95)
+      and finalize(120) < 99,
+      "top-end compression preserves ordering without flattening to 99")
 
 ###########################################################################
 print("\n=== status curses / Mirror ===")
@@ -619,6 +772,66 @@ print("   Flurry Shot: %d  %s" % flurry)
 print("   Chain Shot:  %d  %s" % chain)
 check("locks out" in flurry[1],
       "a hammer that blocks a top hammer says so (%r)" % flurry[1])
+
+score_hammer = lua.eval("BoonAdvisor.ScoreHammer")
+build("FistBaseUpgradeTrait")
+fist_hammers = {name: score_hammer(name)[0] for name in
+                ("FistDashAttackHealthBufferTrait", "FistChargeSpecialTrait",
+                 "FistSpecialLandTrait")}
+check(fist_hammers["FistDashAttackHealthBufferTrait"]
+      > fist_hammers["FistChargeSpecialTrait"]
+      > fist_hammers["FistSpecialLandTrait"],
+      "fists rank Breaching Cross above Flying Cutter above Quake Cutter")
+
+build("GunBaseUpgradeTrait")
+check(score_hammer("GunGrenadeDropTrait")[0] > score_hammer("GunHomingBulletTrait")[0]
+      and score_hammer("GunSlowGrenade")[0] > score_hammer("GunHomingBulletTrait")[0],
+      "rail ranks Hazard Bomb and Targeting System above Seeking Fire")
+plain_delta = score_hammer("GunInfiniteAmmoTrait")[0]
+build("GunGrenadeSelfEmpowerTrait")
+eris_delta = score_hammer("GunInfiniteAmmoTrait")[0]
+check(eris_delta > plain_delta, "Delta Chamber gains its Eris-specific value")
+
+build("BowBaseUpgradeTrait")
+check(score_hammer("BowDoubleShotTrait")[0] > score_hammer("BowChainShotTrait")[0]
+      and score_hammer("BowBondBoostTrait")[0] < score_hammer("BowChainShotTrait")[0],
+      "bow ranks Twin Shot high and Repulse Shot low")
+plain_triple = score_hammer("BowTripleShotTrait")[0]
+build("BowBondTrait")
+check(score_hammer("BowTripleShotTrait")[0] > plain_triple
+      and score_hammer("BowCloseAttackTrait")[0] > 80,
+      "Rama rewards Triple Shot and Point-Blank Shot")
+
+build("ShieldRushBonusProjectileTrait")
+chaos_dread = score_hammer("ShieldThrowFastTrait")[0]
+build("ShieldBaseUpgradeTrait")
+plain_dread = score_hammer("ShieldThrowFastTrait")[0]
+check(score_hammer("ShieldRushProjectileTrait")[0] > plain_dread
+      and chaos_dread < plain_dread,
+      "shield ranks Charged Shot high and penalizes Dread Flight on Chaos")
+plain_minotaur = score_hammer("ShieldPerfectRushTrait")[0]
+build("ShieldBaseUpgradeTrait", "ShieldChargeHealthBufferTrait")
+paired_minotaur = score_hammer("ShieldPerfectRushTrait")[0]
+check(paired_minotaur > plain_minotaur,
+      "Breaching Rush raises the value of its Minotaur Rush pairing")
+
+build("SpearBaseUpgradeTrait")
+check(score_hammer("SpearAutoAttack")[0] > score_hammer("SpearAttackPhalanxTrait")[0]
+      and score_hammer("SpearThrowExplode")[0] > score_hammer("SpearAttackPhalanxTrait")[0],
+      "spear ranks Flurry Jab and Exploding Launcher above Triple Jab")
+plain_skewer = score_hammer("SpearThrowElectiveCharge")[0]
+build("SpearSpinTravel")
+check(score_hammer("SpearThrowElectiveCharge")[0] > plain_skewer,
+      "Charged Skewer gains its Guan Yu run-winner bonus")
+
+build("SwordBaseUpgradeTrait")
+plain_shadow = score_hammer("SwordBackstabTrait")[0]
+check(score_hammer("SwordDoubleDashAttackTrait")[0] > 84,
+      "Double Edge is a top sword hammer")
+build("SwordConsecrationTrait")
+check(score_hammer("SwordBackstabTrait")[0] > plain_shadow,
+      "Shadow Slash gains its Arthur-specific value")
+build()
 
 # A lockout only costs you something you could actually have had.
 build()
@@ -932,6 +1145,14 @@ lua.execute("CurrentRun.CurrentRoom = { Name='A_PostBoss01', RoomSetName='Tartar
 asphodel_pom = sk("ChamberStackTrait")[0]
 check(early_pom > asphodel_pom,
       "Pom Blossom accounts for the encounters remaining before the next rack")
+
+lua.execute("CurrentRun.CurrentRoom = { Name='RoomPreRun', RoomSetName='Home', KeepsakeFreeSwap=true }")
+build("SwordBaseUpgradeTrait")
+plain_shackle = sk("VanillaTrait")[0]
+build("SwordConsecrationTrait")
+heavy_shackle, heavy_shackle_reason = sk("VanillaTrait")
+check(heavy_shackle > plain_shackle and "base damage" in heavy_shackle_reason,
+      "Shattered Shackle recognizes heavy base-damage aspects")
 
 # The same number of free levels is better when those levels can hit a strong
 # build core instead of only a deeply diminished filler boon.
@@ -1693,6 +1914,33 @@ check(any("[run-end]" in l and "result=clear" in l and "time=1234" in l
           and "build=" in l for l in logged),
       "run telemetry ends with an outcome, time, and final build")
 check(G["__picked"] is True, "the selection hook still calls through to vanilla")
+
+# In game, telemetry must leave the active UI frame before touching disk. The
+# no-thread test harness above retains a synchronous fallback for tooling.
+_async_logfile = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                               "picklog_async_test.log")
+if _os.path.exists(_async_logfile):
+    _os.remove(_async_logfile)
+lua.execute("BoonAdvisor.Config.LogFilePath = [[%s]]"
+            % _async_logfile.replace("\\", "\\\\"))
+lua.execute("""
+__queuedTelemetryThread = nil
+function wait(duration) __telemetryWait = duration end
+function thread(fn, args) __queuedTelemetryThread = { Fn=fn, Args=args } end
+BoonAdvisor.LogLine("[async] frame-safe")
+""")
+check(lua.eval("__queuedTelemetryThread") is not None
+      and not _os.path.exists(_async_logfile),
+      "enabled telemetry performs no disk I/O in the active UI frame")
+lua.execute("__queuedTelemetryThread.Fn(__queuedTelemetryThread.Args)")
+async_logged = []
+if _os.path.exists(_async_logfile):
+    async_logged = [l.strip() for l in io.open(_async_logfile, encoding="utf-8")
+                    if l.strip()]
+    _os.remove(_async_logfile)
+check("[async] frame-safe" in async_logged,
+      "deferred telemetry flushes the queued event")
+lua.execute("thread = nil; wait = nil; BoonAdvisor.Config.LogFilePath = nil")
 lua.execute("""
 CurrentRun.Cleared = nil
 CurrentRun.GameplayTime = 0
@@ -1892,8 +2140,104 @@ elite_boon_door = door("Boon", "ZeusUpgrade",
                        BoonRaritiesOverride=elite_rarity)
 check(elite_boon_door[0] > normal_boon_door[0],
       "an Infernal Gate boon reads the destination room rarity")
+
+lua.execute("CurrentRun.ConsumableRecord = {}; __depth = 10")
+early_heart = lua.eval("BoonAdvisor.ScoreMaxHealthDoor")(lua.table())[0]
+lua.execute("CurrentRun.ConsumableRecord.RoomRewardMaxHealthDrop = 8; __depth = 35")
+late_heart = lua.eval("BoonAdvisor.ScoreMaxHealthDoor")(lua.table())[0]
+check(early_heart > late_heart,
+      "Centaur Hearts diminish after repeated pickups and late in the run")
+
+story_raw, story_reason = lua.eval("BoonAdvisor.ScoreStoryDoor")(
+    lua.table(RoomSetName="Asphodel"))
+check(story_raw > G["BoonAdvisor"]["Config"]["Doors"]["Types"]["Story"]
+      and story_reason != "story room",
+      "story doors use the best live Eurydice choice instead of a flat tier")
+
+lua.execute("NPCData = { NPC_Sisyphus_01 = { MoneyMin=200, MoneyMax=220, MetaPointMin=80, MetaPointMax=100 } }")
+sisy_money = lua.eval("BoonAdvisor.ScoreStoryChoiceRaw")("ChoiceText_Money")[1]
+check("210" in sisy_money,
+      "Sisyphus values are read from NPCData instead of hardcoded")
+lua.execute("NPCData = nil")
+
+well_score, well_reason = lua.eval("BoonAdvisor.ScoreShopItem")(
+    lua.table(Name="TemporaryImprovedWeaponTrait", Type="Consumable"))
+check(well_score > 0 and "unrated" not in well_reason,
+      "known Well of Charon items receive contextual ratings")
+
+well_names = list(G["BoonAdvisor"]["Config"]["Shop"]["WellItems"].keys())
+well_names.extend(["TemporaryDoorHealTrait", "TemporaryWeaponLifeOnKillTrait",
+                   "EmptyMaxHealthDrop", "DamageSelfDrop"])
+lua.execute("CurrentRun.Hero.Health = 100; CurrentRun.Hero.MaxHealth = 100")
+unrated_well = []
+for name in well_names:
+    _, reason = lua.eval("BoonAdvisor.ScoreShopItem")(
+        lua.table(Name=name, Type="Trait", HealthCost=25))
+    if "unrated" in reason:
+        unrated_well.append(name)
+check(not unrated_well, "every Well of Charon item has an explicit scoring path%s" %
+      ("" if not unrated_well else " -- MISSING %s" % unrated_well))
+
+lua.execute("__depth = 5; CurrentRun.CurrentRoom = { RoomSetName='Tartarus' }; CurrentRun.BiomeDepthCache = 2")
+early_gate = lua.eval("BoonAdvisor.ScoreChaosGate")(lua.table(HealthCost=20))[0]
+lua.execute("__depth = 35; CurrentRun.CurrentRoom = { RoomSetName='Styx' }; CurrentRun.BiomeDepthCache = nil")
+late_gate, late_gate_reason = lua.eval("BoonAdvisor.ScoreChaosGate")(
+    lua.table(HealthCost=20))
+check(early_gate > late_gate and "less run remains" in late_gate_reason,
+      "Chaos gates lose value when little run remains for the blessing")
+
+lua.execute("CurrentRun.Money = 250; __depth = 10")
+early_money = lua.eval("BoonAdvisor.ScoreMoneyDoor")(lua.table())[0]
+lua.execute("__depth = 38")
+late_money, late_money_reason = lua.eval("BoonAdvisor.ScoreMoneyDoor")(lua.table())
+check(early_money > late_money and "fewer shops" in late_money_reason,
+      "gold rooms account for the shorter late-run spending window")
+
+lua.execute("""
+CurrentRun.CurrentRoom = { RoomSetName='Elysium' }
+CurrentRun.BiomeDepthCache = 2
+""")
+far_chaos = lua.eval("BoonAdvisor.ScoreChaos")(lua.table(
+    ItemName="ChaosBlessingMeleeTrait",
+    SecondaryItemName="ChaosCursePrimaryAttackTrait", Rarity="Common"))[0]
+lua.execute("CurrentRun.BiomeDepthCache = 8")
+near_chaos, near_reason = lua.eval("BoonAdvisor.ScoreChaos")(lua.table(
+    ItemName="ChaosBlessingMeleeTrait",
+    SecondaryItemName="ChaosCursePrimaryAttackTrait", Rarity="Common"))
+check(near_chaos < far_chaos and "boss" in near_reason,
+      "Chaos curses are discounted when they can remain active at the boss")
+
+build("ZeusLightningDebuff", "AresLongCurseTrait",
+      "DionysusPoisonPowerTrait", "DemeterRangedBonusTrait")
+crowded_god_score, crowded_god_reason = lua.eval("BoonAdvisor.ScoreGodDoor")(
+    "PoseidonUpgrade", lua.table())
+check("full god pool" in crowded_god_reason,
+      "new gods are discounted after the run's god pool is already broad")
+
+lua.execute("""
+CurrentRun.CurrentRoom = { Name='A_StateRefresh', RoomSetName='Tartarus' }
+CurrentRun.Money = 30
+BoonAdvisor.DoorCandidateRoom = nil
+BoonAdvisor.DoorCandidates = {}
+__refreshShopDoor = { ObjectId=8101, DoorIconId=9101,
+    Room={ ChosenRewardType='Shop' } }
+__refreshHeartDoor = { ObjectId=8102, DoorIconId=9102,
+    Room={ ChosenRewardType='Health' } }
+BoonAdvisor.RegisterDoor(__refreshShopDoor)
+BoonAdvisor.RegisterDoor(__refreshHeartDoor)
+BoonAdvisor.RefreshDoorOverlays()
+__poorBestDoor = BoonAdvisor.LastBestDoorObjectId
+CurrentRun.Money = 250
+BoonAdvisor.MarkRunStateDirty()
+__fundedBestDoor = BoonAdvisor.LastBestDoorObjectId
+""")
+check(lua.eval("__poorBestDoor") == 8102 and lua.eval("__fundedBestDoor") == 8101,
+      "door advice refreshes when the purse changes after exits appear")
+
 lua.execute("""GameState.Cosmetics = {}; __meta = nil
-CurrentRun.Money = 500""")
+CurrentRun.Money = 500; CurrentRun.ConsumableRecord = {}; __depth = 20
+CurrentRun.BiomeDepthCache = nil
+BoonAdvisor.DoorCandidateRoom = nil; BoonAdvisor.DoorCandidates = {}""")
 
 ###########################################################################
 print("\n=== pom vs trial of the gods ===")
@@ -1983,6 +2327,12 @@ trial_candidates = lua.eval("BoonAdvisor.GetGodCandidateTraits")(
     "ArtemisUpgrade", lua.table(ExcludeDuo=True))
 contains_name = lua.eval("function(t, n) for _, v in ipairs(t) do "
                          "if v == n then return true end end return false end")
+build("PoseidonRushTrait")
+athena_with_dash_filled = lua.eval("BoonAdvisor.GetGodCandidateTraits")(
+    "AthenaUpgrade", lua.table())
+check(not contains_name(athena_with_dash_filled, "AthenaRushTrait"),
+      "god-door forecasts exclude occupied core slots")
+
 check(contains_name(normal_candidates, "HeartsickCritDamageTrait"),
       "ordinary Artemis doors can offer eligible Duo boons")
 check(not contains_name(trial_candidates, "HeartsickCritDamageTrait"),
@@ -1992,16 +2342,16 @@ lua.execute("CurrentRun.Hero.Health = 40")
 check(door("Devotion")[0] < two_boons, "the Trial still loses value when hurt")
 check(pom_fresh > pom_stale, "a fresh pom target beats a stacked one")
 
-# A Pom offers a RANDOM subset, so holding one excellent boon among many
-# mediocre ones must NOT score as if that boon were guaranteed on offer.
-build("AthenaRushTrait")                       # only target: the best in the game
+# A Pom offers a RANDOM subset, so holding one excellent scaling target among
+# many utility targets must not score as if that target were guaranteed.
+build("ZeusWeaponTrait")
 only_best = door("StackUpgrade")
-build("AthenaRushTrait", "DionysusRushTrait", "ArtemisRushTrait",
-      "ZeusRushTrait", "AphroditeRushTrait", "AresRushTrait",
-      "DemeterRushTrait", "PoseidonRushTrait")  # buried among weaker ones
+build("ZeusWeaponTrait", "AthenaRushTrait", "DionysusRushTrait",
+      "ArtemisRushTrait", "ZeusRushTrait", "AphroditeRushTrait",
+      "AresRushTrait", "PoseidonRushTrait")
 buried = door("StackUpgrade")
-print("   only Divine Dash held:        %s %d  %s" % (only_best[1], only_best[0], only_best[2]))
-print("   Divine Dash among 7 weak:     %s %d  %s" % (buried[1], buried[0], buried[2]))
+print("   only Lightning Strike held:   %s %d  %s" % (only_best[1], only_best[0], only_best[2]))
+print("   Lightning Strike among 7 utility targets: %s %d  %s" % (buried[1], buried[0], buried[2]))
 check(only_best[0] > buried[0],
       "a great pom target buried in a big pool is worth less (%d vs %d)"
       % (only_best[0], buried[0]))
@@ -2223,6 +2573,8 @@ check(int(finalize(score_shop_item(lua.table(
 lua.execute("__metalevels = 0; CurrentRun.Hero.Health = 75")
 lua.execute("""
 __boxes = {}
+BoonAdvisor.DoorCandidateRoom = nil
+BoonAdvisor.DoorCandidates = {}
 CurrentRun.Money = 163
 __stock = {
     { Cost = 150, Data = { Name = "RandomLoot", Type = "Boon",

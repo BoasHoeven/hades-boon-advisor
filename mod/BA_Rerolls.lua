@@ -110,65 +110,14 @@ local function currentChoiceNames( lootData )
 	return names
 end
 
-local function currentBuildSignature()
-	local parts = {}
-	local hero = CurrentRun ~= nil and CurrentRun.Hero or nil
-	for _, trait in pairs( hero ~= nil and hero.Traits or {} ) do
-		table.insert( parts, tostring( trait.Name ) .. "@"
-			.. tostring( trait.Rarity or "-") )
-	end
-	table.sort( parts )
-	return table.concat( parts, "," )
-end
-
-local function scoringContextSignature( lootData )
-	local run = CurrentRun or {}
-	local hero = run.Hero or {}
-	local room = run.CurrentRoom or {}
-	local parts = {
-		"hp=" .. tostring( hero.Health ),
-		"max=" .. tostring( hero.MaxHealth ),
-		"gold=" .. tostring( run.Money ),
-		"room=" .. tostring( room.Name ),
-		"slam=" .. tostring( room.WallSlamMultiplier ),
-		"depth=" .. tostring( run.RunDepthCache ),
-		"dd=" .. tostring( BoonAdvisor.LastStandsRemaining ~= nil
-			and BoonAdvisor.LastStandsRemaining() or "-" ),
-	}
-
-	local chances = lootData.RarityChances or {}
-	for _, rarity in ipairs({ "Rare", "Epic", "Heroic", "Legendary" }) do
-		table.insert( parts, rarity .. "=" .. tostring( chances[rarity] ) )
-	end
-
-	-- Pact ranks and Mirror side selections can both change option scores.
-	if GetNumMetaUpgrades ~= nil and MetaUpgradeData ~= nil then
-		for _, key in ipairs( sortedKeys( MetaUpgradeData ) ) do
-			local success, count = pcall( GetNumMetaUpgrades, key )
-			if success and type( count ) == "number" and count ~= 0 then
-				table.insert( parts, "meta:" .. tostring( key ) .. "=" .. count )
-			end
-		end
-	end
-	if GameState ~= nil and type( GameState.MetaUpgradesSelected ) == "table" then
-		local selected = {}
-		for _, key in pairs( GameState.MetaUpgradesSelected ) do
-			table.insert( selected, tostring( key ) )
-		end
-		table.sort( selected )
-		table.insert( parts, "selected=" .. table.concat( selected, "," ) )
-	end
-	return table.concat( parts, ";" )
-end
-
 local function rerollSignature( lootData, currentBest )
 	local parts = {
 		tostring( lootData.Name ),
 		tostring( lootData.StackNum or 1 ),
 		tostring( currentBest ),
 		tostring( CurrentRun ~= nil and CurrentRun.NumRerolls or 0 ),
-		currentBuildSignature(),
-		scoringContextSignature( lootData ),
+		BoonAdvisor.CurrentBuildSignature(),
+		BoonAdvisor.ScoringContextSignature( lootData ),
 	}
 	for _, option in pairs( lootData.UpgradeOptions or {} ) do
 		table.insert( parts, table.concat({
