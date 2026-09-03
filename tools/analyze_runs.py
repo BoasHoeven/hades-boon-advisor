@@ -458,7 +458,7 @@ def analyze_telemetry(path: Path):
     """
     result = {"present": path.is_file(), "path": str(path), "lines": 0,
               "offers": 0, "choices": 0, "followed": 0, "rerolls": 0,
-              "doors": 0, "shops": 0, "wells": 0, "purges": 0, "story": 0,
+              "doors": 0, "shops": 0, "wells": 0, "purges": 0, "trials": 0, "story": 0,
               "keepsakes": 0, "rooms": 0, "decisions": 0,
               "followed_decisions": 0, "runs": [], "sessions": []}
     if not path.is_file():
@@ -581,9 +581,9 @@ def analyze_telemetry(path: Path):
             elif tag == "reroll":
                 result["rerolls"] += 1
                 ensure_run(fields)["rerolls"] += 1
-            elif tag in ("door", "shop", "well", "purge"):
+            elif tag in ("door", "shop", "well", "purge", "trial"):
                 result[{"door": "doors", "shop": "shops", "well": "wells",
-                        "purge": "purges"}[tag]] += 1
+                        "purge": "purges", "trial": "trials"}[tag]] += 1
                 options = parse_stock_options(segments[1:])
                 taken = next((o["name"] for o in options if o["taken"]), fields.get("took"))
                 recommended = next((o["name"] for o in options if o["starred"]), None)

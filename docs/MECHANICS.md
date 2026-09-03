@@ -748,6 +748,15 @@ danger differs a lot by god (Ares blade rifts and Zeus chain lightning versus
 Athena deflect), so `Config.Doors.TrialSpurnedRisk` charges the Trial for the
 god the advisor expects you to refuse: the lower-scored of the two.
 
+Inside the room the two pickups come from `GiveLoot` -> `CreateLoot`
+(RoomManager.lua:2831), which returns the loot table with its `ObjectId` and
+the god's loot `Name`. The mod hooks `CreateLoot`, and once both pickups of
+the current Devotion room exist it badges each orb with
+`boon(X) now + DevotionSecondBoonWeight * boon(Y) later - TrialSpurnedRisk[Y]`
+and stars the god to open. Opening either orb calls `CreateBoonLootButtons`
+with that loot, which is where the choice is logged as `[trial]` and the
+badges are removed (vanilla destroys both orbs right after).
+
 ### 14d. Fated Authority
 
 `AssignRoomToExitDoor` (RoomManager.lua:4984) marks a door `CanBeRerolled`

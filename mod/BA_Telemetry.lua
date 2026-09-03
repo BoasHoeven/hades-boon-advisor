@@ -219,8 +219,9 @@ local function logStockLine( tag, chosenName, entries, chosenId, bestId )
 			bestScore = entry.Score
 		end
 		local availability = entry.Affordable and "" or "[unaffordable]"
+		local cost = entry.Cost ~= nil and ( "@" .. entry.Cost ) or ""
 		table.insert( parts, flags .. entry.Name .. "=" .. entry.Score
-			.. "@" .. entry.Cost .. availability )
+			.. cost .. availability )
 	end
 	table.sort( parts )
 	local margin = ( bestScore ~= nil and takenScore ~= nil )
@@ -283,6 +284,21 @@ function BoonAdvisor.LogWellChoice( button )
 			Cost = result.Cost } )
 	end
 	logStockLine( "[well ] ", data.Name, entries, button.Index, bestIndex )
+end
+
+-- Trial of the Gods: which of the two pickups was opened.
+function BoonAdvisor.LogTrialChoice( chosenName )
+	if not telemetryEnabled() or chosenName == nil then return end
+	local evaluation = BoonAdvisor.TrialEvaluation
+	if evaluation == nil or evaluation.Results == nil
+		or evaluation.Results[chosenName] == nil then return end
+	local entries = {}
+	for name, result in pairs( evaluation.Results ) do
+		table.insert( entries, { ObjectId = name, Name = name,
+			Score = math.floor( BoonAdvisor.Finalize( result.RawScore ) ),
+			Affordable = true } )
+	end
+	logStockLine( "[trial] ", chosenName, entries, chosenName, evaluation.BestName )
 end
 
 -- Pool of Purging sale. Called before vanilla removes the boon.

@@ -3155,6 +3155,81 @@ check(any(l.startswith("[purge]") and "took=ZeusWeaponTrait" in l and "*" in l
       "a purge sale is logged with every option and the star")
 lua.execute("CurrentRun.CurrentRoom = {}; CurrentRun.Money = 500")
 
+# E4, in the room: the two Trial pickups are scored and the god to open is starred.
+build("ZeusWeaponTrait")
+lua.execute("""
+BoonAdvisor.ClearTrialOverlay()
+CurrentRun.CurrentRoom = { Name = "A_Combat10", ChosenRewardType = "Devotion",
+    Encounter = { LootAName = "ZeusUpgrade", LootBName = "AresUpgrade" } }
+CurrentRun.Money = 500
+__boxes = {}
+BoonAdvisor.RecordTrialLoot({ ObjectId = 951, Name = "ZeusUpgrade" })
+__afterFirst = #__boxes
+BoonAdvisor.RecordTrialLoot({ ObjectId = 952, Name = "AresUpgrade" })
+""")
+tb = G["__boxes"]
+trial_rows = [(tb[i]["Id"], tb[i]["LuaValue"]["BALine"]) for i in range(1, len(tb) + 1)]
+for oid, t in trial_rows:
+    print("   trial id=%s  %s" % (oid, t))
+check(lua.eval("__afterFirst") == 0 and sorted({oid for oid, _ in trial_rows}) == [951, 952],
+      "nothing is drawn until both Trial pickups exist, then each orb gets a badge")
+check(sum(1 for _, t in trial_rows if t.startswith("*")) == 1,
+      "exactly one Trial pickup is starred")
+trial_eval = G["BoonAdvisor"]["TrialEvaluation"]
+zeus, ares = trial_eval["Results"]["ZeusUpgrade"], trial_eval["Results"]["AresUpgrade"]
+check(abs(zeus["RawScore"] - (zeus["Now"] + 0.42 * zeus["Later"] - zeus["SpurnedRisk"])) < 1e-6
+      and ares["SpurnedRisk"] == 5 and zeus["SpurnedRisk"] == 6,
+      "each side is its boon now plus the discounted boon later minus the refused god's danger")
+check(any("refusing" in t or "after the fight" in t for _, t in trial_rows),
+      "the Trial reason names the god that will arm the foes")
+lua.execute("""
+BoonAdvisor.Installed = nil
+function CreateLoot(args) return { ObjectId = 960 + #__createdLoot, Name = args.Name } end
+__createdLoot = {}
+""")
+load(os.path.join(MOD, "BoonAdvisor.lua"))
+load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "oracle.lua"))
+G["BoonAdvisor"]["Config"]["DoorOfferSimulationSamples"] = 0
+lua.execute("function CreateTextBox(a) table.insert(__boxes, a) end")
+_trial_logfile = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                               "picklog_trial_test.log")
+if _os.path.exists(_trial_logfile):
+    _os.remove(_trial_logfile)
+lua.execute("BoonAdvisor.Config.LogPicks = true")
+lua.execute("BoonAdvisor.Config.LogFilePath = [[%s]]" % _trial_logfile.replace("\\", "\\\\"))
+lua.execute("""
+BoonAdvisor.ClearTrialOverlay()
+__boxes = {}
+CreateLoot({ Name = "ZeusUpgrade" })
+CreateLoot({ Name = "AresUpgrade" })
+__trialBadges = #__boxes
+CreateBoonLootButtons({ Name = "AresUpgrade", UpgradeOptions = {
+    { ItemName = "AresWeaponTrait", Rarity = "Common", Type = "Trait" } }}, false)
+CurrentRun.CurrentRoom.Encounter.ChosenGodName = "AresUpgrade"
+CurrentRun.CurrentRoom.Encounter.SpurnedGodName = "ZeusUpgrade"
+CreateLoot({ Name = "ZeusUpgrade", ExchangeOnlyFromLootName = "AresUpgrade" })
+__finalTrialRewardTracked = BoonAdvisor.TrialLoot ~= nil
+CreateBoonLootButtons({ Name = "ZeusUpgrade", UpgradeOptions = {
+    { ItemName = "ZeusSecondaryTrait", Rarity = "Common", Type = "Trait" } }}, false)
+""")
+lua.execute("BoonAdvisor.Config.LogPicks = false; BoonAdvisor.Config.LogFilePath = nil")
+trial_logged = []
+if _os.path.exists(_trial_logfile):
+    trial_logged = [l.strip() for l in io.open(_trial_logfile, encoding="utf-8") if l.strip()]
+    _os.remove(_trial_logfile)
+for line in trial_logged:
+    if line.startswith("[trial]"):
+        print("   %s" % line)
+check(lua.eval("__trialBadges") >= 2 and lua.eval("BoonAdvisor.TrialLoot") is None,
+      "the CreateLoot hook draws the badges and opening a pickup clears them")
+check(any(l.startswith("[trial]") and "took=AresUpgrade" in l and "*ZeusUpgrade=" in l
+          and "margin=" in l and ">AresUpgrade=" in l for l in trial_logged),
+      "opening a Trial pickup logs both gods, the star, and the margin")
+check(not lua.eval("__finalTrialRewardTracked")
+      and sum(1 for l in trial_logged if l.startswith("[trial]")) == 1,
+      "the refused god's post-fight boon is not tracked or logged as a second Trial choice")
+lua.execute("CurrentRun.CurrentRoom = {}")
+
 # C4: in a non-English game the keepsake guidance stays off, like the reasons.
 lua.execute("""
 function GetLanguage(a) return "de" end
