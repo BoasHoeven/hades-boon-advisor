@@ -14,7 +14,8 @@ The `*` marks the recommended available option.
 ## Features
 
 - Advises on boons, Daedalus Hammers, Poms, Chaos, doors, Charon's shop, the
-  Well of Charon, keepsakes, story-room rewards, and the Pool of Purging.
+  Well of Charon, the two Trial of the Gods pickups, keepsakes, story-room
+  rewards, and the Pool of Purging.
 - Shows how far the starred option is ahead (`* S 95 +14`), so a coin flip
   reads differently from a landslide, and says when a weak screen from a new
   god is worth walking away from.

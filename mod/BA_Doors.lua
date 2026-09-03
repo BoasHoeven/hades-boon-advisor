@@ -671,6 +671,180 @@ function BoonAdvisor.ScoreDevotionDoor( room, refreshArgs )
 	return score, reason
 end
 
+---------------------------------------------------------------------------
+-- Trial of the Gods: the two pickups on the ground
+---------------------------------------------------------------------------
+
+--[[
+	Inside the Trial room, StartDevotionTest spawns one boon per god through
+	GiveLoot -> CreateLoot and waits for the player to open one. Whichever
+	is opened is the boon you get now; the other god arms the enemies for
+	the fight and hands over an ordinary boon when it is cleared. So picking
+	god X is worth:
+
+	    boon(X) now + DevotionSecondBoonWeight * boon(Y) later
+	    - TrialSpurnedRisk[Y] * Pact risk
+
+	which is the same arithmetic the Trial door uses, evaluated for each
+	side. The pickups carry a badge each; the star marks the god to open.
+]]
+function BoonAdvisor.IsTrialRoom( room )
+	local encounter = room ~= nil and room.Encounter or nil
+	return room ~= nil and room.ChosenRewardType == "Devotion"
+		and encounter ~= nil and encounter.LootAName ~= nil
+		and encounter.LootBName ~= nil and encounter.LootAName ~= encounter.LootBName
+end
+
+function BoonAdvisor.ScoreTrialGods( lootAName, lootBName, room )
+	local doors = BoonAdvisor.Config.Doors
+	local args = { Room = room, ExcludeDuo = true }
+	local scoreA = BoonAdvisor.ScoreGodDoor( lootAName, args )
+	local scoreB = BoonAdvisor.ScoreGodDoor( lootBName, args )
+	local pactRisk = BoonAdvisor.PactRiskMultiplier ~= nil
+		and BoonAdvisor.PactRiskMultiplier() or 1
+	local riskScale = pactRisk * BoonAdvisor.ObjectiveRiskMultiplier()
+	local weight = doors.DevotionSecondBoonWeight or 0.42
+	local function godName( lootName )
+		return tostring( lootName ):gsub( "Upgrade$", "" )
+	end
+	local function evaluate( now, nowName, later, laterName )
+		local spurnedRisk = ( ( doors.TrialSpurnedRisk or {} )[laterName] or 0 ) * riskScale
+		local reason
+		if spurnedRisk >= 4 then
+			reason = godName( nowName ) .. " now; refusing " .. godName( laterName )
+				.. " arms the foes hard"
+		else
+			reason = godName( nowName ) .. " now, " .. godName( laterName )
+				.. " after the fight"
+		end
+		return { RawScore = now + later * weight - spurnedRisk, Now = now,
+			Later = later, SpurnedRisk = spurnedRisk, Reason = reason }
+	end
+	local results = {}
+	results[lootAName] = evaluate( scoreA, lootAName, scoreB, lootBName )
+	results[lootBName] = evaluate( scoreB, lootBName, scoreA, lootAName )
+	local bestName = results[lootAName].RawScore >= results[lootBName].RawScore
+		and lootAName or lootBName
+	local otherName = bestName == lootAName and lootBName or lootAName
+	return results, bestName,
+		math.floor( results[bestName].RawScore - results[otherName].RawScore + 0.5 )
+end
+
+function BoonAdvisor.ClearTrialOverlay()
+	for _, loot in pairs( BoonAdvisor.TrialLoot or {} ) do
+		BoonAdvisor.ClearWorldTextAnchor( loot, "BoonAdvisorAnchorId", "BoonAdvisorOwnsAnchor" )
+	end
+	BoonAdvisor.TrialLoot = nil
+	BoonAdvisor.TrialLootRoom = nil
+end
+
+-- Called for every loot the game creates; only the Trial's pair is kept.
+function BoonAdvisor.RecordTrialLoot( loot )
+	local room = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
+	if loot == nil or loot.ObjectId == nil or loot.Name == nil
+		or not BoonAdvisor.IsTrialRoom( room ) then
+		return
+	end
+	local encounter = room.Encounter
+	-- The refused god's ordinary reward is spawned after the fight in this
+	-- same Devotion room. It is not another choice between the two gods.
+	if encounter.ChosenGodName ~= nil or loot.ExchangeOnlyFromLootName ~= nil then
+		return
+	end
+	if loot.Name ~= encounter.LootAName and loot.Name ~= encounter.LootBName then
+		return
+	end
+	if BoonAdvisor.TrialLootRoom ~= room then
+		BoonAdvisor.ClearTrialOverlay()
+		BoonAdvisor.TrialLoot = {}
+		BoonAdvisor.TrialLootRoom = room
+	end
+	BoonAdvisor.TrialLoot[loot.Name] = loot
+	if BoonAdvisor.TrialLoot[encounter.LootAName] ~= nil
+		and BoonAdvisor.TrialLoot[encounter.LootBName] ~= nil then
+		BoonAdvisor.DrawTrialOverlay()
+	end
+end
+
+function BoonAdvisor.DrawTrialOverlay()
+	local config = BoonAdvisor.Config
+	if not config.Enabled or not config.Doors.Enabled then return end
+	local room = BoonAdvisor.TrialLootRoom
+	if room == nil or BoonAdvisor.TrialLoot == nil or not BoonAdvisor.IsTrialRoom( room ) then
+		return
+	end
+	local encounter = room.Encounter
+	local results, bestName, margin = BoonAdvisor.ScoreTrialGods(
+		encounter.LootAName, encounter.LootBName, room )
+	BoonAdvisor.TrialEvaluation = { Results = results, BestName = bestName,
+		Margin = margin, Room = room }
+
+	local layout = config.Doors.Layout
+	local showReason = config.Doors.ShowReason and BoonAdvisor.ShouldShowReason()
+	for lootName, result in pairs( results ) do
+		local loot = BoonAdvisor.TrialLoot[lootName]
+		if loot ~= nil and loot.ObjectId ~= nil then
+			local score = math.floor( BoonAdvisor.Finalize( result.RawScore ) )
+			local rank, color = BoonAdvisor.RankFor( score )
+			local badge = rank .. "  " .. score
+			if lootName == bestName then
+				badge = "* " .. badge
+				if config.ShowBestMargin and margin ~= nil then
+					badge = badge .. "  +" .. tostring( margin )
+				end
+				color = config.BestPickColor
+			end
+			BoonAdvisor.ClearWorldTextAnchor( loot, "BoonAdvisorAnchorId", "BoonAdvisorOwnsAnchor" )
+			local anchorId, ownsAnchor = BoonAdvisor.CreateWorldTextAnchor( loot.ObjectId )
+			loot.BoonAdvisorAnchorId = anchorId
+			loot.BoonAdvisorOwnsAnchor = ownsAnchor
+			CreateTextBox({
+				Id = anchorId,
+				Text = "{$TempTextData.BALine}",
+				LuaKey = "TempTextData",
+				LuaValue = { BALine = badge },
+				FontSize = layout.RankFontSize,
+				OffsetY = layout.TrialRankOffsetY or -140,
+				Color = color,
+				Font = "AlegreyaSansSCBold",
+				Justification = "Center",
+				Width = layout.TextWidth,
+				ShadowBlur = 0, ShadowColor = { 0, 0, 0, 1 }, ShadowOffset = { 0, 2 },
+				OutlineThickness = 2, OutlineColor = { 0, 0, 0, 1 },
+			})
+			if showReason and result.Reason ~= nil then
+				CreateTextBox({
+					Id = anchorId,
+					Text = "{$TempTextData.BALine}",
+					LuaKey = "TempTextData",
+					LuaValue = { BALine = result.Reason },
+					FontSize = layout.ReasonFontSize,
+					OffsetY = layout.TrialReasonOffsetY or -120,
+					Color = config.ReasonColor,
+					Font = "AlegreyaSansSCRegular",
+					Justification = "Center",
+					Width = layout.TextWidth,
+					ShadowBlur = 0, ShadowColor = { 0, 0, 0, 1 }, ShadowOffset = { 0, 2 },
+					OutlineThickness = 2, OutlineColor = { 0, 0, 0, 1 },
+				})
+			end
+		end
+	end
+end
+
+-- The player opened one of the two pickups: the choice is made. Log it and
+-- take the badges down before vanilla destroys the orbs.
+function BoonAdvisor.HandleTrialMenuOpen( lootData )
+	if lootData == nil or lootData.Name == nil or BoonAdvisor.TrialLoot == nil then
+		return
+	end
+	if BoonAdvisor.TrialLoot[lootData.Name] == nil then return end
+	if BoonAdvisor.LogTrialChoice ~= nil then
+		BoonAdvisor.LogTrialChoice( lootData.Name )
+	end
+	BoonAdvisor.ClearTrialOverlay()
+end
+
 local function shopPriceMultiplier()
 	local multiplier = 1
 	if GetNumMetaUpgrades ~= nil and MetaUpgradeData ~= nil

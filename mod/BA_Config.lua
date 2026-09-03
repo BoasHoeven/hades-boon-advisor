@@ -434,6 +434,9 @@ BoonAdvisor.Config =
 			-- The Chaos gate has no reward icon, so its text hangs off the
 			-- door itself and must be lifted clear of it.
 			NoIconOffsetY = -110,
+			-- The two Trial of the Gods pickups: text hangs off the boon orb.
+			TrialRankOffsetY = -140,
+			TrialReasonOffsetY = -120,
 			-- Without an explicit width the engine clips world text: reasons
 			-- were rendering as "NEW BOO" and running under the door laurel.
 			TextWidth = 460,

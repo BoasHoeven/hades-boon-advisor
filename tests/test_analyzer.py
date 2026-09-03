@@ -74,6 +74,8 @@ LINES = [
     "[door ] " + CTX % 3 + " took=Money margin=12 followed=false reroll=false | *ZeusUpgrade=78 | >Money=66 | build=x",
     "[room ] " + CTX % 3 + " room=A_Combat07 encounter=GeneratedB type=Default clear=45.0 "
     "damage_taken=80 hit=true timer=- next=Shop",
+    "[trial] " + CTX % 4 + " took=ZeusUpgrade margin=0 followed=true | "
+    ">*ZeusUpgrade=84 | AresUpgrade=79 | build=x",
     "[well ] " + CTX % 4 + " took=KeepsakeChargeDrop margin=20 followed=false | "
     "*TemporaryImprovedWeaponTrait=74@60 | >KeepsakeChargeDrop=54@20 | build=x",
     "[purge] " + CTX % 5 + " took=ChamberGoldTrait margin=0 followed=true | "
@@ -96,11 +98,11 @@ with tempfile.TemporaryDirectory() as directory:
     telemetry = analyzer.analyze_telemetry(log)
     assert telemetry["sessions"][0]["fingerprint"] == "1a2b3c4d"
     assert telemetry["rooms"] == 4
-    assert telemetry["wells"] == 1 and telemetry["purges"] == 1
+    assert telemetry["wells"] == 1 and telemetry["purges"] == 1 and telemetry["trials"] == 1
     run = telemetry["runs"][0]
     assert run["result"] == "death" and run["end"]["killer"] == "Megaera"
     kinds = [d["kind"] for d in run["decisions"]]
-    assert kinds == ["boon", "door", "well", "purge", "boon"], kinds
+    assert kinds == ["boon", "door", "trial", "well", "purge", "boon"], kinds
     report = telemetry["report"]
     overrules = report["overrules"]
     assert [o["kind"] for o in overrules] == ["well", "boon", "door"], \

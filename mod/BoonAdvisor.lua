@@ -114,6 +114,8 @@ if not BoonAdvisor.Installed then
 
 	function CreateBoonLootButtons( lootData, reroll )
 		BoonAdvisor.BoonOverlayGeneration = ( BoonAdvisor.BoonOverlayGeneration or 0 ) + 1
+		-- Opening one of the two Trial pickups is the Trial decision.
+		BoonAdvisor.SafeCall( BoonAdvisor.HandleTrialMenuOpen, lootData )
 		-- Perf bookkeeping runs before vanilla builds the screen, so it must
 		-- never be the reason the screen fails to build.
 		local perfSession, phaseStart
@@ -286,7 +288,23 @@ if not BoonAdvisor.Installed then
 			-- before vanilla swaps CurrentRoom for the next one.
 			BoonAdvisor.SafeCall( BoonAdvisor.LogDoorChoice, door )
 			BoonAdvisor.SafeCall( BoonAdvisor.LogRoomOutcome, currentRun, door )
+			BoonAdvisor.SafeCall( BoonAdvisor.ClearTrialOverlay )
 			return BoonAdvisor.Vanilla_LeaveRoom( currentRun, door )
+		end
+	end
+
+	--[[
+		Trial of the Gods. StartDevotionTest spawns one pickup per god through
+		GiveLoot -> CreateLoot; once both exist the pair is scored and the god
+		to open is starred. Every other loot passes straight through.
+	]]
+	BoonAdvisor.Vanilla_CreateLoot = BoonAdvisor.Vanilla_CreateLoot or CreateLoot
+
+	if BoonAdvisor.Vanilla_CreateLoot ~= nil then
+		function CreateLoot( args )
+			local loot = BoonAdvisor.Vanilla_CreateLoot( args )
+			BoonAdvisor.SafeCall( BoonAdvisor.RecordTrialLoot, loot )
+			return loot
 		end
 	end
 
