@@ -533,10 +533,17 @@ BoonAdvisor.Ratings.Archetypes =
 		Core = { "AphroditeWeaponTrait", "ArtemisWeaponTrait" },
 	},
 	{
-		-- The fists apply Chill faster than any other weapon.
-		Name = "fists Chill",
+		--[[
+			The fists are the fastest-hitting weapon in the game, so the hit
+			class already prefers Lightning Strike there. An earlier "fists
+			Chill" route paid a full core bonus to Frost and Heartbreak Strike
+			and outvoted that, ranking Lightning Strike third. The opener now
+			lists all three and steers lightly; cadence decides between them.
+		]]
+		Name = "fists opener",
 		Aspect = "FistBaseUpgradeTrait",
-		Core = { "DemeterWeaponTrait", "AphroditeWeaponTrait" },
+		Core = { "ZeusWeaponTrait", "DemeterWeaponTrait", "AphroditeWeaponTrait" },
+		CoreBonus = 6,
 	},
 	{
 		-- Dionysus' cask fog lines up with the rail's special.
@@ -1025,6 +1032,14 @@ BoonAdvisor.Ratings.ChaosBlessingSlots =
 	ChaosBlessingSecondaryTrait  = "Secondary",
 }
 
+-- Blessings that help survive the coming boss; they gain the boss-preparation
+-- bonus (Weights.BossPrepSurvivalBonus) in the last rooms of a biome.
+BoonAdvisor.Ratings.ChaosSurvivalBlessings =
+{
+	ChaosBlessingExtraChanceTrait = true,
+	ChaosBlessingMaxHealthTrait   = true,
+}
+
 -- How much the curse half hurts while it is active (subtracted).
 BoonAdvisor.Ratings.ChaosCurses =
 {
@@ -1110,6 +1125,27 @@ BoonAdvisor.Ratings.AspectHitClass =
 	FistWeaveTrait = { Secondary = "fast" },         -- Demeter multi-hit upper
 	GunLoadedGrenadeTrait = { Secondary = "fast" },  -- Lucifer Hellfire pulses
 	SwordConsecrationTrait = { Melee = "slow" },      -- Arthur heavy swings
+}
+
+--[[
+	Hammers that change how often a move hits. These are consulted before the
+	aspect and weapon tables: Flurry Jab turns the spear's attack into a
+	rapid jab that wants Lightning Strike, while Spread Fire turns the rail's
+	stream of bullets into a few heavy pellets that want Heartbreak Strike.
+	Only hammers whose cadence materially differs from the weapon default
+	are listed; "medium" neutralises a slot's preference either way.
+]]
+BoonAdvisor.Ratings.HammerHitClass =
+{
+	SpearAutoAttack           = { Melee = "fast" },   -- Flurry Jab
+	GunMinigunTrait           = { Melee = "fast" },   -- Flurry Fire
+	GunShotgunTrait           = { Melee = "slow" },   -- Spread Fire
+	GunGrenadeClusterTrait    = { Secondary = "fast" }, -- Cluster Bomb
+	BowTapFireTrait           = { Melee = "fast" },   -- Flurry Shot
+	BowDoubleShotTrait        = { Melee = "medium" }, -- Twin Shot
+	BowPowerShotTrait         = { Melee = "slow" },   -- Perfect Shot
+	BowLongRangeDamageTrait   = { Melee = "slow" },   -- Sniper Shot
+	ShieldRushProjectileTrait = { Melee = "slow" },   -- Charged Shot
 }
 
 BoonAdvisor.Ratings.HitClassBonus =

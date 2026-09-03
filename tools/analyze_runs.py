@@ -3,8 +3,14 @@
 This parser follows the documented Supergiant save header, raw LZ4 block, and
 Luabins value format. It opens saves only in binary read mode and never writes
 to them. Historical saves contain final run builds, not the offers that were
-shown, so save backtests are correlation checks. Exact recommendation follow
-rates come from BoonAdvisor-runs.log.
+shown, so save backtests are correlation checks.
+
+The telemetry half reads BoonAdvisor-runs.log and prints a PER-DECISION
+report: every overrule sorted by the model's own margin, with what happened
+in the rooms after it; which reasons and which score terms show up in the
+picks you overruled; and the follow rate per advisor. Run-level clear rates
+are only compared once a bucket holds ten runs, because with fewer they say
+nothing.
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ from pathlib import Path
 
 MAGIC = 0x31424753
 MAX_DECOMPRESSED = 32 * 1024 * 1024
+MIN_RUNS_FOR_CLEAR_RATE = 10
 
 
 class SaveFormatError(ValueError):
@@ -366,122 +373,504 @@ def analyze_history(game_state, benchmarks):
     }
 
 
-TOOK_RE = re.compile(r"^\[took \]\s+(.*?)\s+recommended=(.*?)\s+followed=(true|false)\s*$")
-FIELD_RE = re.compile(r"(?:^|\s)([A-Za-z][A-Za-z0-9_-]*)=([^\s|]+)")
+# --------------------------------------------------------------------------
+# Telemetry
+# --------------------------------------------------------------------------
+
+# key=value where value is either "quoted text" or a run of non-space,
+# non-pipe characters. Field names are the mod's own (see BA_Telemetry.lua).
+FIELD_RE = re.compile(r'(?:^|\s)([A-Za-z][A-Za-z0-9_-]*)=("(?:[^"]*)"|[^\s|]+)')
+# One option in an [offer] segment: flags, name, score, rank, then terms.
+OPTION_RE = re.compile(r'^([>*]*)([A-Za-z][A-Za-z0-9_:/]*)=(-?\d+)(?:\((\w)\))?(.*)$')
+# One option in a [door]/[shop]/[well]/[purge]/[keep] segment.
+STOCK_RE = re.compile(r'^([>*]*)([A-Za-z][A-Za-z0-9_:/]*)=(-?\d+)(?:@(\d+))?(\[[^\]]*\])?$')
+SESSION_RE = re.compile(r'^=== BoonAdvisor v(\S+)\s+(.*?)\s*===$')
+TAG_RE = re.compile(r'^\[([a-z-]+)\s*\]\s*(.*)$')
+LEGACY_TOOK_RE = re.compile(r"^\[took \]\s+(.*?)\s+recommended=(.*?)\s+followed=(true|false)\s*$")
+
+
+def parse_fields(text):
+    fields = {}
+    for key, value in FIELD_RE.findall(text):
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        fields[key] = value
+    return fields
+
+
+def to_number(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_terms(text):
+    terms = {}
+    for key, value in FIELD_RE.findall(text):
+        number = to_number(value.strip('"'))
+        if number is not None:
+            terms[key] = number
+    return terms
+
+
+def parse_offer_options(segments):
+    options = []
+    for segment in segments:
+        match = OPTION_RE.match(segment.strip())
+        if not match:
+            continue
+        flags, name, score, rank, rest = match.groups()
+        options.append({
+            "name": name, "score": int(score), "rank": rank,
+            "starred": "*" in flags, "terms": parse_terms(rest),
+        })
+    return options
+
+
+def parse_stock_options(segments):
+    options = []
+    for segment in segments:
+        match = STOCK_RE.match(segment.strip())
+        if not match:
+            continue
+        flags, name, score, cost, note = match.groups()
+        options.append({
+            "name": name, "score": int(score), "cost": int(cost) if cost else None,
+            "taken": ">" in flags, "starred": "*" in flags,
+            "note": note.strip("[]") if note else None,
+        })
+    return options
+
+
+def new_run_record(context):
+    return {"context": context, "decisions": [], "rooms": [], "offers": [],
+            "rerolls": 0, "result": None, "time": None, "end": {}}
 
 
 def analyze_telemetry(path: Path):
+    """Parse BoonAdvisor-runs.log into runs, decisions and rooms.
+
+    A decision is any line where the advisor recommended something and the
+    player chose: boon/pom/hammer/chaos picks ([took ]), doors, shop and Well
+    purchases, purge sales, keepsakes and story choices. Each carries the
+    model's margin (recommended minus taken) so overrules can be ranked.
+    """
     result = {"present": path.is_file(), "path": str(path), "lines": 0,
               "offers": 0, "choices": 0, "followed": 0, "rerolls": 0,
-              "doors": 0, "shops": 0, "story": 0, "decisions": 0,
-              "followed_decisions": 0, "runs": []}
+              "doors": 0, "shops": 0, "wells": 0, "purges": 0, "story": 0,
+              "keepsakes": 0, "rooms": 0, "decisions": 0,
+              "followed_decisions": 0, "runs": [], "sessions": []}
     if not path.is_file():
         return result
     current = None
+    session = None
+    last_offer = None
+    room_index = 0
+
+    def ensure_run(fields):
+        nonlocal current
+        if current is None:
+            current = new_run_record(fields if fields else {})
+            current["implicit"] = True
+        return current
+
+    def add_decision(kind, fields, margin, followed, reason=None, options=None,
+                     taken=None, recommended=None, terms=None, extra=None):
+        run = ensure_run(fields)
+        decision = {
+            "kind": kind, "run": fields.get("run", "?"),
+            "depth": to_number(fields.get("depth"), None),
+            "biome": fields.get("biome"), "aspect": fields.get("aspect"),
+            "taken": taken, "recommended": recommended,
+            "margin": margin, "followed": followed, "reason": reason,
+            "options": options or [], "terms": terms or {},
+            "room_index": len(run["rooms"]),
+            "session": session["fingerprint"] if session else None,
+            "line": fields.get("_line"),
+        }
+        if extra:
+            decision.update(extra)
+        run["decisions"].append(decision)
+        result["decisions"] += 1
+        result["followed_decisions"] += int(bool(followed))
+        return decision
+
     with path.open(encoding="utf-8", errors="replace") as handle:
         for raw in handle:
             line = raw.strip()
             if not line:
                 continue
             result["lines"] += 1
-            fields = dict(FIELD_RE.findall(line))
-            if line.startswith("[run-start]"):
-                current = {"offers": 0, "choices": 0, "followed": 0,
-                           "decisions": 0, "followed_decisions": 0,
-                           "rerolls": 0, "context": fields}
-            elif line.startswith("[offer]"):
+            session_match = SESSION_RE.match(line)
+            if session_match:
+                fields = parse_fields(session_match.group(2))
+                session = {"version": session_match.group(1),
+                           "fingerprint": fields.get("ratings", "unknown"),
+                           "objective": fields.get("objective"), "runs": 0}
+                result["sessions"].append(session)
+                continue
+            tag_match = TAG_RE.match(line)
+            if not tag_match:
+                continue
+            tag, body = tag_match.groups()
+            segments = [part.strip() for part in body.split("|")]
+            fields = parse_fields(segments[0])
+            fields["_line"] = result["lines"]
+            build = next((parse_fields(part)["build"] for part in segments[1:]
+                          if part.startswith("build=")), None)
+
+            if tag == "run-start":
+                current = new_run_record(fields)
+                current["build"] = build
+                current["session"] = session["fingerprint"] if session else None
+                if session:
+                    session["runs"] += 1
+            elif tag == "offer":
                 result["offers"] += 1
-                if current is not None:
-                    current["offers"] += 1
-            elif line.startswith("[took ]"):
+                options = parse_offer_options(segments[1:])
+                summary = {}
+                for part in segments[1:]:
+                    if part.startswith("kind=") or " margin=" in " " + part:
+                        summary.update(parse_fields(part))
+                last_offer = {"fields": fields, "options": options,
+                              "kind": summary.get("kind", "boon"),
+                              "reason": summary.get("reason"),
+                              "verdict": summary.get("verdict"),
+                              "build": build}
+                ensure_run(fields)["offers"].append(last_offer)
+            elif tag == "took":
                 result["choices"] += 1
-                match = TOOK_RE.match(line)
-                followed = bool(match and match.group(3) == "true")
+                legacy = LEGACY_TOOK_RE.match(line)
+                if "taken" in fields:
+                    followed = fields.get("followed") == "true"
+                    taken = fields.get("taken")
+                    recommended = fields.get("recommended")
+                    margin = to_number(fields.get("margin"), 0.0)
+                    kind = fields.get("kind", "boon")
+                    reason = fields.get("reason")
+                elif legacy:
+                    taken, recommended = legacy.group(1), legacy.group(2)
+                    followed = legacy.group(3) == "true"
+                    margin = None
+                    kind = "boon"
+                    reason = None
+                else:
+                    continue
+                terms = {}
+                options = []
+                if last_offer is not None:
+                    options = last_offer["options"]
+                    starred = next((o for o in options if o["starred"]), None)
+                    chosen = next((o for o in options if o["name"] == taken), None)
+                    if starred is not None:
+                        terms = starred["terms"]
+                    if reason is None:
+                        reason = last_offer.get("reason")
+                    if margin is None and starred and chosen:
+                        margin = float(starred["score"] - chosen["score"])
+                    taken_terms = chosen["terms"] if chosen else {}
+                else:
+                    taken_terms = {}
                 result["followed"] += int(followed)
-                result["decisions"] += 1
-                result["followed_decisions"] += int(followed)
-                if current is not None:
-                    current["choices"] += 1
-                    current["followed"] += int(followed)
-                    current["decisions"] += 1
-                    current["followed_decisions"] += int(followed)
-            elif line.startswith("[reroll]"):
+                add_decision(kind, fields, margin, followed, reason, options,
+                             taken, recommended, terms,
+                             {"taken_terms": taken_terms,
+                              "verdict": last_offer.get("verdict") if last_offer else None,
+                              "build": last_offer.get("build") if last_offer else build})
+            elif tag == "reroll":
                 result["rerolls"] += 1
-                if current is not None:
-                    current["rerolls"] += 1
-            elif line.startswith("[door ]"):
-                result["doors"] += 1
-                followed = ">*" in line
-                result["decisions"] += 1
-                result["followed_decisions"] += int(followed)
-                if current is not None:
-                    current["decisions"] += 1
-                    current["followed_decisions"] += int(followed)
-            elif line.startswith("[shop ]"):
-                result["shops"] += 1
-                followed = ">*" in line
-                result["decisions"] += 1
-                result["followed_decisions"] += int(followed)
-                if current is not None:
-                    current["decisions"] += 1
-                    current["followed_decisions"] += int(followed)
-            elif line.startswith("[story]"):
+                ensure_run(fields)["rerolls"] += 1
+            elif tag in ("door", "shop", "well", "purge"):
+                result[{"door": "doors", "shop": "shops", "well": "wells",
+                        "purge": "purges"}[tag]] += 1
+                options = parse_stock_options(segments[1:])
+                taken = next((o["name"] for o in options if o["taken"]), fields.get("took"))
+                recommended = next((o["name"] for o in options if o["starred"]), None)
+                followed = fields.get("followed")
+                if followed is None:
+                    followed = any(o["taken"] and o["starred"] for o in options)
+                else:
+                    followed = followed == "true"
+                margin = to_number(fields.get("margin"))
+                if margin is None:
+                    star = next((o["score"] for o in options if o["starred"]), None)
+                    took = next((o["score"] for o in options if o["taken"]), None)
+                    margin = float(star - took) if star is not None and took is not None else 0.0
+                add_decision(tag, fields, margin, followed, None, options,
+                             taken, recommended, {},
+                             {"build": build, "reroll_advised": fields.get("reroll") == "true"})
+            elif tag == "keep":
+                result["keepsakes"] += 1
+                options = parse_stock_options(segments[1:])
+                add_decision("keepsake", fields, to_number(fields.get("margin"), 0.0),
+                             fields.get("followed") == "true", None, options,
+                             fields.get("took"), fields.get("recommended"), {},
+                             {"build": build, "stage": fields.get("stage")})
+            elif tag == "story":
                 result["story"] += 1
-                followed = fields.get("followed") == "true"
-                result["decisions"] += 1
-                result["followed_decisions"] += int(followed)
-                if current is not None:
-                    current["decisions"] += 1
-                    current["followed_decisions"] += int(followed)
-            elif line.startswith("[run-end]"):
-                if current is None:
-                    current = {"offers": 0, "choices": 0, "followed": 0,
-                               "decisions": 0, "followed_decisions": 0,
-                               "rerolls": 0, "context": {}}
-                current["result"] = fields.get("result")
-                try:
-                    current["time"] = float(fields["time"])
-                except (KeyError, ValueError):
-                    current["time"] = None
-                current["end"] = fields
-                result["runs"].append(current)
+                add_decision("story", fields, to_number(fields.get("margin"), 0.0),
+                             fields.get("followed") == "true", None, [],
+                             fields.get("took"), fields.get("recommended"), {},
+                             {"build": build})
+            elif tag == "room":
+                result["rooms"] += 1
+                run = ensure_run(fields)
+                run["rooms"].append({
+                    "index": len(run["rooms"]),
+                    "room": fields.get("room"), "encounter": fields.get("encounter"),
+                    "type": fields.get("type"),
+                    "clear": to_number(fields.get("clear")),
+                    "damage": to_number(fields.get("damage_taken"), 0.0),
+                    "hit": fields.get("hit") == "true",
+                    "hp": fields.get("hp"), "depth": to_number(fields.get("depth")),
+                    "biome": fields.get("biome"), "next": fields.get("next"),
+                    "decisions_before": len(run["decisions"]),
+                })
+            elif tag == "run-end":
+                run = ensure_run(fields)
+                run["result"] = fields.get("result")
+                run["time"] = to_number(fields.get("time"))
+                run["end"] = fields
+                run["final_build"] = build
+                result["runs"].append(run)
                 current = None
-    if current is not None and any(current[key] for key in
-                                   ("offers", "choices", "decisions", "rerolls")):
+                last_offer = None
+    if current is not None and (current["decisions"] or current["offers"]
+                                or current["rooms"] or current["rerolls"]):
         current["result"] = "incomplete"
-        current["time"] = None
         result["runs"].append(current)
+
     result["follow_rate"] = (result["followed"] / result["choices"]
                              if result["choices"] else None)
     result["all_decision_follow_rate"] = (
         result["followed_decisions"] / result["decisions"]
         if result["decisions"] else None)
-    for followed in (True, False):
-        group = [run for run in result["runs"] if run["decisions"] and
-                 (run["followed_decisions"] / run["decisions"] >= 0.5) == followed]
-        clears = [run for run in group if run.get("result") == "clear"]
-        times = [run["time"] for run in clears if run.get("time") is not None]
-        result["mostly_followed" if followed else "mostly_not_followed"] = {
-            "runs": len(group), "clears": len(clears),
-            "clear_rate": len(clears) / len(group) if group else None,
-            "median_clear_time": statistics.median(times) if times else None,
-        }
-    objective_groups = defaultdict(list)
-    for run in result["runs"]:
-        objective_groups[run.get("context", {}).get("objective", "Unknown")].append(run)
-    result["objectives"] = {}
-    for objective, group in objective_groups.items():
-        clears = [run for run in group if run.get("result") == "clear"]
-        times = [run["time"] for run in clears if run.get("time") is not None]
-        decisions = sum(run["decisions"] for run in group)
-        followed_count = sum(run["followed_decisions"] for run in group)
-        result["objectives"][objective] = {
-            "runs": len(group), "clears": len(clears),
-            "clear_rate": len(clears) / len(group) if group else None,
-            "median_clear_time": statistics.median(times) if times else None,
-            "follow_rate": followed_count / decisions if decisions else None,
-        }
+    result["report"] = decision_report(result["runs"])
     return result
+
+
+def _median(values):
+    values = [value for value in values if isinstance(value, (int, float))]
+    return statistics.median(values) if values else None
+
+
+def room_aftermath(run, decision, count=3):
+    """Clear time and damage of the next `count` rooms, relative to the run's
+    medians. Positive damage_delta means more damage than usual."""
+    rooms = run["rooms"]
+    start = decision["room_index"]
+    window = [room for room in rooms[start:start + count]
+              if room["type"] != "NonCombat"]
+    median_clear = _median([room["clear"] for room in rooms])
+    median_damage = _median([room["damage"] for room in rooms])
+    clears = [room["clear"] for room in window if room["clear"] is not None]
+    damages = [room["damage"] for room in window]
+    return {
+        "rooms": len(window),
+        "clear": _median(clears),
+        "damage": _median(damages),
+        "clear_delta": (_median(clears) - median_clear)
+        if clears and median_clear is not None else None,
+        "damage_delta": (_median(damages) - median_damage)
+        if damages and median_damage is not None else None,
+    }
+
+
+def decision_report(runs):
+    decisions = [(run, decision) for run in runs for decision in run["decisions"]]
+    overrules = []
+    for run, decision in decisions:
+        if decision["followed"]:
+            continue
+        entry = dict(decision)
+        entry["aftermath"] = room_aftermath(run, decision)
+        entry["run_result"] = run.get("result")
+        overrules.append(entry)
+    overrules.sort(key=lambda item: -(item["margin"] or 0))
+
+    reason_counts = Counter(item["reason"] for item in overrules
+                            if item["kind"] in ("boon", "pom", "hammer", "chaos")
+                            and item["reason"])
+    reason_totals = Counter(decision["reason"] for _, decision in decisions
+                            if decision["kind"] in ("boon", "pom", "hammer", "chaos")
+                            and decision["reason"])
+
+    per_kind = {}
+    for _, decision in decisions:
+        bucket = per_kind.setdefault(decision["kind"], {"decisions": 0, "followed": 0,
+                                                        "margins": []})
+        bucket["decisions"] += 1
+        bucket["followed"] += int(bool(decision["followed"]))
+        if decision["margin"] is not None:
+            bucket["margins"].append(decision["margin"])
+    for bucket in per_kind.values():
+        bucket["follow_rate"] = (bucket["followed"] / bucket["decisions"]
+                                 if bucket["decisions"] else None)
+        bucket["median_margin"] = _median(bucket["margins"])
+        del bucket["margins"]
+
+    term_sums = defaultdict(lambda: {"followed": [], "overruled": []})
+    for _, decision in decisions:
+        if decision["kind"] not in ("boon", "pom", "hammer", "chaos"):
+            continue
+        bucket = "followed" if decision["followed"] else "overruled"
+        for name, value in decision["terms"].items():
+            term_sums[name][bucket].append(value)
+    term_averages = {}
+    for name, buckets in term_sums.items():
+        term_averages[name] = {
+            "followed_mean": statistics.mean(buckets["followed"]) if buckets["followed"] else None,
+            "followed_n": len(buckets["followed"]),
+            "overruled_mean": statistics.mean(buckets["overruled"]) if buckets["overruled"] else None,
+            "overruled_n": len(buckets["overruled"]),
+        }
+
+    spikes = []
+    for run in runs:
+        damages = [room["damage"] for room in run["rooms"]]
+        median_damage = _median(damages)
+        if median_damage is None:
+            continue
+        for room in run["rooms"]:
+            if room["damage"] >= max(25.0, 2.5 * median_damage) and room["damage"] > median_damage:
+                before = run["decisions"][:room["decisions_before"]][-3:]
+                spikes.append({
+                    "run": run["context"].get("run", "?"),
+                    "room": room["room"], "encounter": room["encounter"],
+                    "depth": room["depth"], "damage": room["damage"],
+                    "median_damage": median_damage, "hp": room["hp"],
+                    "build": run.get("final_build") or run.get("build"),
+                    "decisions": [{"kind": d["kind"], "taken": d["taken"],
+                                   "recommended": d["recommended"],
+                                   "followed": d["followed"], "margin": d["margin"]}
+                                  for d in before],
+                })
+    spikes.sort(key=lambda item: -item["damage"])
+
+    buckets = {}
+    for label, predicate in (("mostly_followed", lambda rate: rate >= 0.5),
+                             ("mostly_not_followed", lambda rate: rate < 0.5)):
+        group = [run for run in runs if run["decisions"]
+                 and predicate(sum(1 for d in run["decisions"] if d["followed"])
+                               / len(run["decisions"]))]
+        clears = [run for run in group if run.get("result") == "clear"]
+        buckets[label] = {
+            "runs": len(group), "clears": len(clears),
+            "clear_rate": (len(clears) / len(group)
+                           if len(group) >= MIN_RUNS_FOR_CLEAR_RATE else None),
+            "median_clear_time": _median([run["time"] for run in clears])
+            if len(group) >= MIN_RUNS_FOR_CLEAR_RATE else None,
+        }
+
+    return {
+        "decisions": len(decisions),
+        "overrules": overrules,
+        "reason_frequency": [
+            {"reason": reason, "overruled": count,
+             "total": reason_totals[reason],
+             "overrule_rate": count / reason_totals[reason] if reason_totals[reason] else None}
+            for reason, count in reason_counts.most_common()],
+        "per_kind": per_kind,
+        "term_averages": term_averages,
+        "damage_spikes": spikes,
+        "run_buckets": buckets,
+        "runs_recorded": len(runs),
+    }
+
+
+def fmt_delta(value, unit=""):
+    if value is None:
+        return "   n/a"
+    return "%+6.1f%s" % (value, unit)
+
+
+def print_decision_report(telemetry):
+    report = telemetry.get("report")
+    if not report:
+        return
+    runs = report["runs_recorded"]
+    print("\nPer-decision report (%d decisions across %d run records)" %
+          (report["decisions"], runs))
+    if telemetry["sessions"]:
+        print("  Sessions: " + ", ".join(
+            "v%s ratings=%s objective=%s (%d runs)" %
+            (s["version"], s["fingerprint"], s["objective"], s["runs"])
+            for s in telemetry["sessions"]))
+        if len({s["fingerprint"] for s in telemetry["sessions"]}) > 1:
+            print("  NOTE: more than one ratings fingerprint; term averages mix tunings.")
+
+    print("\nFollow rate per advisor (n = decisions)")
+    for kind, bucket in sorted(report["per_kind"].items(), key=lambda kv: -kv[1]["decisions"]):
+        rate = "n/a" if bucket["follow_rate"] is None else "%3.0f%%" % (100 * bucket["follow_rate"])
+        median = "n/a" if bucket["median_margin"] is None else "%.1f" % bucket["median_margin"]
+        print("  %-9s n=%-4d followed %s   median margin %s" %
+              (kind, bucket["decisions"], rate, median))
+
+    overrules = report["overrules"]
+    print("\nOverrules by margin (n = %d; big margin + clean rooms = model error, "
+          "big margin + damage spike = player error, small margin = noise)" % len(overrules))
+    if not overrules:
+        print("  none")
+    for item in overrules[:25]:
+        after = item["aftermath"]
+        print("  %+6.1f  %-8s run %-3s d%-3s %-30s over %-30s"
+              % (item["margin"] or 0, item["kind"], item["run"],
+                 int(item["depth"]) if item["depth"] is not None else "?",
+                 (item["taken"] or "?")[:30], (item["recommended"] or "?")[:30]))
+        detail = "          next %d rooms: clear %s s, damage %s" % (
+            after["rooms"], fmt_delta(after["clear_delta"]), fmt_delta(after["damage_delta"]))
+        if item.get("reason"):
+            detail += '   star: "%s"' % item["reason"]
+        print(detail)
+
+    print("\nStar reasons among overruled boon picks (overruled / total with that reason)")
+    if not report["reason_frequency"]:
+        print("  none")
+    for item in report["reason_frequency"][:12]:
+        print("  %3d / %-3d  %s" % (item["overruled"], item["total"], item["reason"]))
+
+    print("\nScore terms of the star, mean when followed vs overruled (n)")
+    rows = []
+    for name, item in report["term_averages"].items():
+        if item["followed_mean"] is None and item["overruled_mean"] is None:
+            continue
+        gap = ((item["overruled_mean"] or 0) - (item["followed_mean"] or 0))
+        rows.append((abs(gap), name, item))
+    for _, name, item in sorted(rows, reverse=True)[:15]:
+        followed = "n/a" if item["followed_mean"] is None else "%6.1f" % item["followed_mean"]
+        overruled = "n/a" if item["overruled_mean"] is None else "%6.1f" % item["overruled_mean"]
+        print("  %-12s followed %s (%d)   overruled %s (%d)" %
+              (name, followed, item["followed_n"], overruled, item["overruled_n"]))
+    if not rows:
+        print("  none (offer lines without term breakdowns)")
+
+    spikes = report["damage_spikes"]
+    print("\nDamage-spike rooms (n = %d; damage >= 2.5x the run's median)" % len(spikes))
+    for spike in spikes[:10]:
+        print("  run %-3s d%-3s %-18s %-22s damage %4.0f (median %3.0f) hp %s" %
+              (spike["run"], int(spike["depth"]) if spike["depth"] is not None else "?",
+               (spike["room"] or "?")[:18], (spike["encounter"] or "?")[:22],
+               spike["damage"], spike["median_damage"], spike["hp"] or "?"))
+        for decision in spike["decisions"]:
+            print("      before: %-8s took %-28s %s" %
+                  (decision["kind"], (decision["taken"] or "?")[:28],
+                   "followed" if decision["followed"]
+                   else "over %s (margin %s)" % ((decision["recommended"] or "?")[:20],
+                                                  decision["margin"])))
+        if spike["build"]:
+            print("      build: %s" % spike["build"][:110])
+    if not spikes:
+        print("  none")
+
+    print("\nRun outcome by follow rate (clear rates need >= %d runs per bucket)" %
+          MIN_RUNS_FOR_CLEAR_RATE)
+    for label, bucket in report["run_buckets"].items():
+        rate = ("%.0f%%" % (100 * bucket["clear_rate"])
+                if bucket["clear_rate"] is not None else "n/a (too few runs)")
+        print("  %-20s %2d runs  %2d clears  clear rate %s  median %s" %
+              (label.replace("_", " "), bucket["runs"], bucket["clears"], rate,
+               format_time(bucket["median_clear_time"])))
 
 
 def print_report(report):
@@ -518,13 +907,15 @@ def print_report(report):
     print("\nTelemetry: %s" % telemetry["path"])
     if not telemetry["present"]:
         print("  No log yet. The analyzer is ready for the next run.")
-    else:
-        boon_follow = "n/a" if telemetry["follow_rate"] is None else "%.1f%%" % (100 * telemetry["follow_rate"])
-        all_follow = ("n/a" if telemetry["all_decision_follow_rate"] is None
-                      else "%.1f%%" % (100 * telemetry["all_decision_follow_rate"]))
-        print("  %d offers, %d boon choices, boon follow %s, all decisions %s, %d run records" %
-              (telemetry["offers"], telemetry["choices"], boon_follow, all_follow,
-               len(telemetry["runs"])))
+        return
+    boon_follow = "n/a" if telemetry["follow_rate"] is None else "%.1f%%" % (100 * telemetry["follow_rate"])
+    all_follow = ("n/a" if telemetry["all_decision_follow_rate"] is None
+                  else "%.1f%%" % (100 * telemetry["all_decision_follow_rate"]))
+    print("  %d offers, %d boon choices, boon follow %s, all decisions %s, "
+          "%d rooms, %d run records" %
+          (telemetry["offers"], telemetry["choices"], boon_follow, all_follow,
+           telemetry["rooms"], len(telemetry["runs"])))
+    print_decision_report(telemetry)
 
 
 def default_save_path():
@@ -560,6 +951,8 @@ def main(argv=None):
                         help="print the full machine-readable report")
     parser.add_argument("--json-out", type=Path,
                         help="write a report file; the save remains untouched")
+    parser.add_argument("--telemetry-only", action="store_true",
+                        help="skip the save file and report on the log alone")
     args = parser.parse_args(argv)
     telemetry_path = args.telemetry or default_telemetry_path(args.save)
 
@@ -570,6 +963,23 @@ def main(argv=None):
         for protected in (args.save, telemetry_path):
             if protected.exists() and target == protected.resolve():
                 parser.error("--json-out must not overwrite %s" % protected)
+
+    if args.telemetry_only or not args.save.is_file():
+        telemetry = analyze_telemetry(telemetry_path)
+        report = {"telemetry": telemetry}
+        if args.json_out:
+            args.json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            if not args.telemetry_only:
+                print("No save at %s; reporting on telemetry alone." % args.save)
+            print("Telemetry: %s" % telemetry["path"])
+            if telemetry["present"]:
+                print_decision_report(telemetry)
+            else:
+                print("  No log yet. The analyzer is ready for the next run.")
+        return 0
 
     try:
         header, globals_table = read_save(args.save)
@@ -585,7 +995,8 @@ def main(argv=None):
         "limitations": [
             "Historical saves retain final builds and outcomes, not each offered choice.",
             "Save correlations are not causal evidence for a recommendation.",
-            "Exact follow-rate comparisons require BoonAdvisor telemetry.",
+            "Per-decision telemetry shows systematic disagreements and outliers; "
+            "whether following the star raises the clear rate needs dozens of runs per aspect.",
         ],
     }
     if args.json_out:

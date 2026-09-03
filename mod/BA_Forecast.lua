@@ -132,22 +132,28 @@ function BoonAdvisor.ScoringContextSignature( lootData )
 		table.insert( parts, rarity .. "=" .. tostring( lootData ~= nil
 			and lootData.RarityChances ~= nil and lootData.RarityChances[rarity] ) )
 	end
-	if GetNumMetaUpgrades ~= nil and MetaUpgradeData ~= nil then
-		for _, key in ipairs( sortedKeys( MetaUpgradeData ) ) do
-			local success, count = pcall( GetNumMetaUpgrades, key )
-			if success and type( count ) == "number" and count ~= 0 then
-				table.insert( parts, "meta:" .. tostring( key ) .. "=" .. count )
+	if BoonAdvisor.FixedContextRun ~= run then
+		local fixed = {}
+		if GetNumMetaUpgrades ~= nil and MetaUpgradeData ~= nil then
+			for _, key in ipairs( sortedKeys( MetaUpgradeData ) ) do
+				local success, count = pcall( GetNumMetaUpgrades, key )
+				if success and type( count ) == "number" and count ~= 0 then
+					table.insert( fixed, "meta:" .. tostring( key ) .. "=" .. count )
+				end
 			end
 		end
-	end
-	if GameState ~= nil and type( GameState.MetaUpgradesSelected ) == "table" then
-		local selected = {}
-		for _, key in pairs( GameState.MetaUpgradesSelected ) do
-			table.insert( selected, tostring( key ) )
+		if GameState ~= nil and type( GameState.MetaUpgradesSelected ) == "table" then
+			local selected = {}
+			for _, key in pairs( GameState.MetaUpgradesSelected ) do
+				table.insert( selected, tostring( key ) )
+			end
+			table.sort( selected )
+			table.insert( fixed, "selected=" .. table.concat( selected, "," ) )
 		end
-		table.sort( selected )
-		table.insert( parts, "selected=" .. table.concat( selected, "," ) )
+		BoonAdvisor.FixedContextRun = run
+		BoonAdvisor.FixedContextSignature = table.concat( fixed, ";" )
 	end
+	table.insert( parts, BoonAdvisor.FixedContextSignature or "")
 	return table.concat( parts, ";" )
 end
 
@@ -232,9 +238,13 @@ function BoonAdvisor.InvalidateForecastCache()
 	BoonAdvisor.ForecastCacheEpoch = nil
 	BoonAdvisor.ForecastCache = nil
 	BoonAdvisor.ForecastCacheOrder = nil
-	BoonAdvisor.InitialOfferCache = nil
 	BoonAdvisor.LastRerollEvaluation = nil
 	BoonAdvisor.ForecastHeroTraitNames = nil
+	-- The per-run Pact/Mirror part of the context signature is recomputed on
+	-- the next forecast; a new run, or offline tooling that edits the Pact
+	-- between calls, must never reuse the previous run's string.
+	BoonAdvisor.FixedContextRun = nil
+	BoonAdvisor.FixedContextSignature = nil
 end
 
 local function cachedForecast( signature )
@@ -1444,6 +1454,7 @@ function BoonAdvisor.ForecastExactOffer( lootData, args )
 	end
 	if tableCount( pool ) == 0 then return nil end
 	local exclusions = copyArray( args.ExclusionNames )
+	local sharedScoreCache = args.ScoreCache or {}
 	local signature = forecastSignature( lootData, pool, args.Mode or "initial",
 		args.CurrentBest, exclusions, args.ContextKey,
 		args.PreparedContext, args.PreparedPoolFingerprint )
@@ -1460,10 +1471,26 @@ function BoonAdvisor.ForecastExactOffer( lootData, args )
 			args.CurrentBest, transforming and "exact-chaos" or "exact" )
 	else
 		result = forecastOrdinaryScenario( lootData, pool, exclusions[1],
-			args.CurrentBest, args.ScoreCache, args.YieldWork )
+			args.CurrentBest, sharedScoreCache, args.YieldWork )
 		if result ~= nil then result.Method = "exact" end
 	end
 	if result == nil then return nil end
+	if not transforming then
+		local bestScore = nil
+		for _, option in ipairs( pool ) do
+			if option.ItemName ~= exclusions[1] then
+				local optionScore = scoreOptionAtRarity(
+					option, option.Rarity or "Common", lootData, sharedScoreCache )
+				if bestScore == nil or optionScore > bestScore
+					or optionScore == bestScore
+						and tostring( option.ItemName ) < tostring( result.BestName ) then
+					bestScore = optionScore
+					result.BestName = option.ItemName
+				end
+			end
+		end
+		result.BestRawScore = bestScore
+	end
 	result.Samples = 0
 	result.Signature = signature
 	result.CacheHit = false

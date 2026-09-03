@@ -18,6 +18,7 @@ end
 
 BoonAdvisor.LinkedIndex = nil
 BoonAdvisor.LinkedByName = nil
+BoonAdvisor.LinkedMemberIndex = nil
 BoonAdvisor.NameCache = {}
 
 ---------------------------------------------------------------------------
@@ -141,8 +142,19 @@ function BoonAdvisor.GetLinkedIndex()
 	if BoonAdvisor.LinkedIndex == nil then
 		BoonAdvisor.LinkedIndex = BoonAdvisor.BuildLinkedIndex()
 		BoonAdvisor.LinkedByName = {}
+		BoonAdvisor.LinkedMemberIndex = {}
 		for _, entry in ipairs( BoonAdvisor.LinkedIndex ) do
 			BoonAdvisor.LinkedByName[entry.Name] = entry
+			for _, set in ipairs( entry.Sets ) do
+				for _, memberName in ipairs( set ) do
+					local members = BoonAdvisor.LinkedMemberIndex[memberName]
+					if members == nil then
+						members = {}
+						BoonAdvisor.LinkedMemberIndex[memberName] = members
+					end
+					table.insert( members, entry )
+				end
+			end
 		end
 	end
 	return BoonAdvisor.LinkedIndex
@@ -258,12 +270,25 @@ function BoonAdvisor.EvaluateSynergy( candidateName, replacedTraitName )
 
 	local function note( priority, magnitude, text )
 		if best == nil or priority > best.Priority
-			or ( priority == best.Priority and magnitude > best.Magnitude ) then
+			or ( priority == best.Priority and magnitude > best.Magnitude )
+			or ( priority == best.Priority and magnitude == best.Magnitude
+				and text < best.Text ) then
 			best = { Priority = priority, Magnitude = magnitude, Text = text }
 		end
 	end
 
-	for _, entry in ipairs( BoonAdvisor.GetLinkedIndex() ) do
+	BoonAdvisor.GetLinkedIndex()
+	local relevant = {}
+	local seen = {}
+	for _, traitName in ipairs({ candidateName, replacedTraitName }) do
+		for _, entry in ipairs( BoonAdvisor.LinkedMemberIndex[traitName] or {} ) do
+			if not seen[entry] then
+				seen[entry] = true
+				table.insert( relevant, entry )
+			end
+		end
+	end
+	for _, entry in ipairs( relevant ) do
 		-- Already owned, or the candidate is the gated boon itself: nothing to advance.
 		local alreadyOwned = entry.Name ~= replacedTraitName
 			and BoonAdvisor.HeroHasTrait( entry.Name )
@@ -615,12 +640,24 @@ function BoonAdvisor.ArchetypeBonus( traitName, replacedTraitName )
 		local liveBefore = false
 		local liveAfter = false
 		local hasRetainedCore = false
+		--[[
+			An aspect-gated route is "live" from the aspect alone, which is
+			what lets the first core pick get steered. It must not keep paying
+			the full core bonus once the run has visibly committed to a
+			different route: on Chiron with Curse of Pain and Divine Dash
+			held, the Hangover route still paid +18 to Heartbreak Strike and
+			outvoted the Merciful End on screen. Until a core boon of THIS
+			route is held, its core bonus is scaled down.
+		]]
+		local committed = BoonAdvisor.HeroHasAnyOf( archetype.Core )
+		local progressScale = committed and 1
+			or ( weights.ArchetypeUncommittedScale or 1 )
 		if archetype.Aspect ~= nil then
 			liveBefore = BoonAdvisor.HeroHasTrait( archetype.Aspect )
 			liveAfter = liveBefore
 			hasRetainedCore = liveBefore
 		else
-			liveBefore = BoonAdvisor.HeroHasAnyOf( archetype.Core )
+			liveBefore = committed
 			hasRetainedCore = BoonAdvisor.HeroHasAnyOf(
 				archetype.Core, replacedTraitName )
 			liveAfter = hasRetainedCore
@@ -640,8 +677,8 @@ function BoonAdvisor.ArchetypeBonus( traitName, replacedTraitName )
 					or archetype.Payoff == nil
 					or BoonAdvisor.CandidateAdvancesLinked(
 						archetype.Payoff, traitName, replacedTraitName ) ) then
-				candidateValue = ( archetype.CoreBonus or weights.ArchetypeCore )
-					* multiplier + objectiveBonus
+				candidateValue = ( ( archetype.CoreBonus or weights.ArchetypeCore )
+					* multiplier + objectiveBonus ) * progressScale
 			end
 		end
 
@@ -655,8 +692,8 @@ function BoonAdvisor.ArchetypeBonus( traitName, replacedTraitName )
 					or archetype.Payoff == nil
 					or BoonAdvisor.CandidateAdvancesLinked(
 						archetype.Payoff, replacedTraitName, replacedTraitName ) ) then
-				replacedValue = ( archetype.CoreBonus or weights.ArchetypeCore )
-					* multiplier + objectiveBonus
+				replacedValue = ( ( archetype.CoreBonus or weights.ArchetypeCore )
+					* multiplier + objectiveBonus ) * progressScale
 			end
 		end
 
@@ -864,6 +901,14 @@ function BoonAdvisor.AspectTraitBonus( traitName )
 end
 
 function BoonAdvisor.CurrentHitClass( slot )
+	-- A hammer that rebuilds the move decides its cadence: Flurry Jab turns
+	-- the spear's medium attack into a fast one, Flurry Shot does the same to
+	-- the bow, Spread Fire slows the rail. Held hammers win over the aspect.
+	for hammerTrait, classes in pairs( BoonAdvisor.Ratings.HammerHitClass or {} ) do
+		if classes[slot] ~= nil and BoonAdvisor.HeroHasTrait( hammerTrait ) then
+			return classes[slot]
+		end
+	end
 	for aspectTrait, classes in pairs( BoonAdvisor.Ratings.AspectHitClass or {} ) do
 		if BoonAdvisor.HeroHasTrait( aspectTrait ) and classes[slot] ~= nil then
 			return classes[slot]
@@ -933,6 +978,34 @@ function BoonAdvisor.DepthTraitBonus( traitName )
 		return -6, "few resource rooms remain"
 	end
 	return 0, nil
+end
+
+--[[
+	Boss preparation. The keepsake rack already weighs the coming boss; the
+	boon screen did not, so a defensive pick three rooms before Theseus scored
+	the same as one at the start of Elysium. Survival-tagged boons gain a
+	bonus that grows as the boss approaches. Returns bonus, reason.
+]]
+function BoonAdvisor.BossPrepBonus( traitName )
+	local weights = BoonAdvisor.Config.Weights
+	local proximity = weights.BossPrepProximity or 0
+	local bonus = weights.BossPrepSurvivalBonus or 0
+	if proximity <= 0 or bonus <= 0 or BoonAdvisor.EncountersUntilNextBoss == nil then
+		return 0, nil
+	end
+	local survival = BoonAdvisor.Ratings.ObjectiveTags ~= nil
+		and BoonAdvisor.Ratings.ObjectiveTags.Survival or nil
+	if survival == nil or not survival[traitName] then
+		return 0, nil
+	end
+	local untilBoss = BoonAdvisor.EncountersUntilNextBoss()
+	if untilBoss == nil or untilBoss > proximity then
+		return 0, nil
+	end
+	local scaled = bonus * ( 1 - untilBoss / ( proximity + 1 ) )
+	local reason = untilBoss <= 0 and "boss next: defence pays now"
+		or "boss in " .. untilBoss .. " rooms"
+	return scaled, reason
 end
 
 --[[
@@ -1173,10 +1246,17 @@ local function findPomCurveOverride( value, depth, seen )
 end
 
 function BoonAdvisor.PomCurveForTrait( traitName )
+	BoonAdvisor.PomCurveCache = BoonAdvisor.PomCurveCache or {}
+	local cached = BoonAdvisor.PomCurveCache[traitName]
+	if cached ~= nil then return cached.Diminishing, cached.Minimum end
 	local weights = BoonAdvisor.Config.Weights
 	local diminishing, minimum = findPomCurveOverride( TraitData[traitName], 1 )
-	return diminishing or weights.PomDiminishing,
-		minimum or weights.PomMinMultiplier
+	cached = {
+		Diminishing = diminishing or weights.PomDiminishing,
+		Minimum = minimum or weights.PomMinMultiplier,
+	}
+	BoonAdvisor.PomCurveCache[traitName] = cached
+	return cached.Diminishing, cached.Minimum
 end
 
 function BoonAdvisor.ScorePom( traitName, lootData )
@@ -1320,6 +1400,19 @@ function BoonAdvisor.ScoreChaos( itemData )
 		end
 	end
 
+	-- A blessing that keeps you alive is worth more with the boss in sight.
+	local weights = BoonAdvisor.Config.Weights
+	local untilBoss = BoonAdvisor.EncountersUntilNextBoss()
+	if untilBoss ~= nil and ( weights.BossPrepProximity or 0 ) > 0
+		and untilBoss <= weights.BossPrepProximity
+		and ( ratings.ChaosSurvivalBlessings or {} )[blessing] then
+		score = score + ( weights.BossPrepSurvivalBonus or 0 )
+			* ( 1 - untilBoss / ( weights.BossPrepProximity + 1 ) )
+		if reason == nil then
+			reason = "survival for the boss in " .. untilBoss .. " rooms"
+		end
+	end
+
 	if reason == nil then
 		if score >= 70 then
 			reason = "strong blessing"
@@ -1339,7 +1432,12 @@ end
 
 --[[
 	Score one offered option. Returns:
-	  { Score = 0..99, Rank = "S".."D", Color = {...}, Reason = string }
+	  { Score = 0..99, RawScore = number, Rank = "S".."D", Color = {...},
+	    Reason = string, Terms = { base = 84, slot = 8, ... } }
+
+	Terms holds every additive contribution by name so the pick log can show
+	which term put the star where it is. Every value is already computed on
+	the way to the score; collecting them costs nothing extra.
 ]]
 function BoonAdvisor.ScoreOption( itemData, lootData )
 	local config = BoonAdvisor.Config
@@ -1348,6 +1446,12 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 
 	local score = weights.DefaultBase
 	local reason = nil
+	local terms = {}
+	local function term( name, value )
+		if value ~= nil and value ~= 0 then
+			terms[name] = ( terms[name] or 0 ) + value
+		end
+	end
 
 	local isHammer = ( lootData ~= nil and lootData.Name == "WeaponUpgrade" )
 
@@ -1355,6 +1459,9 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 
 	if isHammer then
 		score, reason = BoonAdvisor.ScoreHammer( traitName )
+		local hammerBase = BoonAdvisor.Ratings.Hammers[traitName] or weights.DefaultBase
+		term( "base", hammerBase )
+		term( "hammer", score - hammerBase )
 		--[[
 			Hammers exclude each other: 42 of them block at least one other,
 			and the casualty is sometimes the weapon's best (Spread Fire locks
@@ -1363,15 +1470,19 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		]]
 		local hammerExclusion, hammerExclusionReason = BoonAdvisor.ExclusionPenalty( traitName )
 		score = score + hammerExclusion
+		term( "exclusion", hammerExclusion )
 		if hammerExclusionReason ~= nil then
 			reason = hammerExclusionReason
 		end
 	elseif isPom then
 		score, reason = BoonAdvisor.ScorePom( traitName, lootData )
+		term( "pom", score )
 	elseif itemData.Type == "TransformingTrait" then
 		score, reason = BoonAdvisor.ScoreChaos( itemData )
+		term( "chaos", score )
 	elseif itemData.Type ~= "Trait" then
 		score = BoonAdvisor.Ratings.CategoryDefaults.Consumable or weights.DefaultBase
+		term( "base", score )
 	else
 		-- Tier baseline, falling back to the category default for gated boons.
 		local base = BoonAdvisor.Ratings.Base[traitName]
@@ -1380,18 +1491,38 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			base = BoonAdvisor.Ratings.CategoryDefaults[kind] or weights.DefaultBase
 		end
 		score = base
+		term( "base", base )
 
 		-- Duo and Legendary baselines already describe the complete fixed-rarity
 		-- boon. Ordinary offers still get a modest nudge for rolled rarity.
 		local offeredKind = BoonAdvisor.KindOf( traitName )
 		if offeredKind ~= "Duo" and offeredKind ~= "Legendary" then
-			score = score + ( weights.Rarity[itemData.Rarity] or 0 )
+			local rarityBonus = weights.Rarity[itemData.Rarity] or 0
+			score = score + rarityBonus
+			term( "rarity", rarityBonus )
 		end
 
 		-- Slot economy.
 		local reasonPriority = 0
 		local traitData = TraitData[traitName]
 		local slot = traitData ~= nil and traitData.Slot or nil
+
+		--[[
+			Scarcity. A duo or legendary on screen is a one-time offer: the
+			game rolls it at a few percent per screen and only while its
+			prerequisites hold, whereas a core boon comes back next god room.
+			Without this a duo the run built toward could lose to a plain
+			attack boon that merely filled an empty slot.
+		]]
+		if offeredKind == "Duo" or offeredKind == "Legendary" then
+			local scarcity = weights.GatedOfferBonus or 0
+			score = score + scarcity
+			term( "scarcity", scarcity )
+			if scarcity > 0 then
+				reason = offeredKind == "Duo" and "rare duo offer" or "rare legendary offer"
+				reasonPriority = 1
+			end
+		end
 
 		--[[
 			Replacement offers are a swap, so their value is a DIFFERENCE.
@@ -1420,6 +1551,9 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			local newValue = base + ( weights.Rarity[itemData.Rarity] or 0 )
 			local oldValue = oldBase + ( weights.Rarity[itemData.OldRarity] or 0 )
 			score = weights.DefaultBase + ( newValue - oldValue )
+			terms = {}
+			term( "base", weights.DefaultBase )
+			term( "swap", newValue - oldValue )
 
 			if newValue > oldValue then
 				reason = "upgrade to " .. tostring( itemData.Rarity )
@@ -1430,24 +1564,32 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			reasonPriority = 2
 
 			if slot ~= nil then
-				score = score + BoonAdvisor.AspectBonus( slot )
+				local aspectSlot = BoonAdvisor.AspectBonus( slot )
+				score = score + aspectSlot
+				term( "aspect", aspectSlot )
 			end
 			local newHitBonus = BoonAdvisor.HitStyleBonus( traitName )
 			local oldHitBonus = BoonAdvisor.HitStyleBonus( oldName )
 			score = score + newHitBonus - oldHitBonus
+			term( "hit", newHitBonus - oldHitBonus )
 		elseif slot ~= nil then
 			if BoonAdvisor.SlotFilled( slot ) then
 				score = score + weights.SlotExchange
+				term( "slot", weights.SlotExchange )
 				reason = "replaces your " .. BoonAdvisor.SlotDisplayName( slot )
 				reasonPriority = 2
 			else
 				score = score + weights.EmptySlot
+				term( "slot", weights.EmptySlot )
 				reason = "fills empty " .. BoonAdvisor.SlotDisplayName( slot )
 				reasonPriority = 2
 			end
-			score = score + BoonAdvisor.AspectBonus( slot )
+			local aspectSlot = BoonAdvisor.AspectBonus( slot )
+			score = score + aspectSlot
+			term( "aspect", aspectSlot )
 			local hitScore, hitReason = BoonAdvisor.HitStyleBonus( traitName )
 			score = score + hitScore
+			term( "hit", hitScore )
 			if hitReason ~= nil and reasonPriority < 2 then
 				reason = hitReason
 				reasonPriority = 1
@@ -1464,6 +1606,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			end
 		end
 		score = score + aspectTraitScore
+		term( "aspectTrait", aspectTraitScore )
 		if aspectTraitReason ~= nil and reasonPriority < 2 then
 			reason = aspectTraitReason
 			reasonPriority = 1
@@ -1476,6 +1619,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		-- Duos are a better bet when the Mirror makes them likelier to appear.
 		synergyScore = synergyScore * BoonAdvisor.DuoPursuitFactor()
 		score = score + synergyScore
+		term( "synergy", synergyScore )
 		if synergyReason ~= nil and synergyReason.Priority > reasonPriority then
 			reason = synergyReason.Text
 			reasonPriority = synergyReason.Priority
@@ -1484,6 +1628,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		local pairingScore, pairingReason = BoonAdvisor.MechanicalPairingBonus(
 			traitName, itemData.TraitToReplace )
 		score = score + pairingScore
+		term( "pairing", pairingScore )
 		if pairingReason ~= nil and reasonPriority < 3 then
 			reason = pairingReason
 			reasonPriority = 2
@@ -1492,6 +1637,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		-- The active Pact can change what a boon is worth.
 		local pactScore, pactReason = BoonAdvisor.PactBonus( traitName )
 		score = score + pactScore
+		term( "pact", pactScore )
 		if pactReason ~= nil and reasonPriority < 3 then
 			reason = pactReason
 		end
@@ -1505,10 +1651,12 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 				- BoonAdvisor.PactSurvivalBonus( itemData.TraitToReplace )
 		end
 		score = score + pactSurvival
+		term( "survival", pactSurvival )
 
 		-- Knockback is worth more in biomes with a wall-slam multiplier.
 		local slamScore, slamReason = BoonAdvisor.KnockbackBonus( traitName )
 		score = score + slamScore
+		term( "slam", slamScore )
 		if slamReason ~= nil and reasonPriority < 2 then
 			reason = slamReason
 		end
@@ -1519,15 +1667,27 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			depthScore = depthScore - oldDepthScore
 		end
 		score = score + depthScore
+		term( "depth", depthScore )
 		if depthReason ~= nil and reasonPriority < 2 then
 			reason = depthReason
 		end
 
+		-- The boss is close: defence is worth more than it was three rooms ago.
+		local bossScore, bossReason = BoonAdvisor.BossPrepBonus( traitName )
+		if itemData.TraitToReplace ~= nil then
+			bossScore = bossScore - BoonAdvisor.BossPrepBonus( itemData.TraitToReplace )
+		end
+		score = score + bossScore
+		term( "boss", bossScore )
+		if bossReason ~= nil and bossScore > 0 and reasonPriority < 2 then
+			reason = bossReason
+		end
 
 		-- Follow the Mirror: curse breadth, or god breadth.
 		local metaScore, metaReason = BoonAdvisor.MetaBonus(
 			traitName, itemData.TraitToReplace )
 		score = score + metaScore
+		term( "meta", metaScore )
 		if metaReason ~= nil then
 			reason = metaReason
 		end
@@ -1541,11 +1701,13 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 				- BoonAdvisor.ObjectiveTraitBonus( itemData.TraitToReplace )
 		end
 		score = score + objectiveScore
+		term( "objective", objectiveScore )
 
 		-- Steering toward a known strong build outranks every other note.
 		local archetypeScore, archetypeReason = BoonAdvisor.ArchetypeBonus(
 			traitName, itemData.TraitToReplace )
 		score = score + archetypeScore
+		term( "archetype", archetypeScore )
 		if archetypeReason ~= nil then
 			reason = archetypeReason
 		end
@@ -1557,6 +1719,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 		]]
 		local exclusionScore, exclusionReason = BoonAdvisor.ExclusionPenalty( traitName )
 		score = score + exclusionScore
+		term( "exclusion", exclusionScore )
 		if exclusionReason ~= nil then
 			reason = exclusionReason
 		end
@@ -1568,6 +1731,7 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 	if BoonAdvisor.Ratings.HealingOnlyChoices[traitName]
 		and BoonAdvisor.HealingMultiplier ~= nil then
 		local healingMultiplier = BoonAdvisor.HealingMultiplier()
+		local before = score
 		if healingMultiplier <= 0 then
 			score = 1
 			reason = "restores 0 health at this Heat"
@@ -1576,8 +1740,10 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 			reason = math.floor( healingMultiplier * 100 + 0.5 )
 				.. "% effective at this Heat"
 		end
+		term( "healing", score - before )
 	end
 
+	local unclamped = score
 	score = BoonAdvisor.Finalize( score )
 	local rank, color = BoonAdvisor.RankFor( score )
 
@@ -1592,7 +1758,38 @@ function BoonAdvisor.ScoreOption( itemData, lootData )
 	end
 
 	-- RawScore keeps the pre-rounding value so the overlay can break ties
-	-- between options that both round to, say, 88.
-	return { Score = math.floor( score ), RawScore = score,
-		Rank = rank, Color = color, Reason = reason }
+	-- between options that both round to, say, 88. Unclamped is the sum of
+	-- the terms before the soft knee: two elite picks can display 98 and 97
+	-- while being thirteen points apart, and the margin badge shows that.
+	return { Score = math.floor( score ), RawScore = score, Unclamped = unclamped,
+		Rank = rank, Color = color, Reason = reason, Terms = terms }
+end
+
+-- Compact "base=84 slot=8 ..." rendering of a result's Terms, in a fixed
+-- order so lines from different sessions line up in the analyzer.
+BoonAdvisor.TermOrder = { "base", "rarity", "swap", "slot", "aspect", "hit",
+	"aspectTrait", "scarcity", "synergy", "pairing", "pact", "survival", "slam",
+	"depth", "boss", "meta", "objective", "archetype", "exclusion", "healing",
+	"hammer", "pom", "chaos" }
+
+function BoonAdvisor.FormatTerms( terms )
+	if type( terms ) ~= "table" then return "" end
+	local parts = {}
+	local seen = {}
+	for _, name in ipairs( BoonAdvisor.TermOrder ) do
+		local value = terms[name]
+		seen[name] = true
+		if value ~= nil and value ~= 0 then
+			table.insert( parts, name .. "=" .. math.floor( value * 10 + 0.5 ) / 10 )
+		end
+	end
+	local extra = {}
+	for name, value in pairs( terms ) do
+		if not seen[name] and value ~= 0 then table.insert( extra, name ) end
+	end
+	table.sort( extra )
+	for _, name in ipairs( extra ) do
+		table.insert( parts, name .. "=" .. math.floor( terms[name] * 10 + 0.5 ) / 10 )
+	end
+	return table.concat( parts, " " )
 end

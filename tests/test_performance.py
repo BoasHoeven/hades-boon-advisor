@@ -148,10 +148,10 @@ __performanceForecastCalls = 0
 __performanceWaitCalls = 0
 __performanceNextComponent = 9500
 __performanceQueuedThread = nil
-__performanceOriginalForecastRerollPool = BoonAdvisor.ForecastRerollPool
-function BoonAdvisor.ForecastRerollPool(...)
+__performanceOriginalForecastRerollOffer = BoonAdvisor.ForecastRerollOffer
+function BoonAdvisor.ForecastRerollOffer(...)
     __performanceForecastCalls = __performanceForecastCalls + 1
-    return __performanceOriginalForecastRerollPool(...)
+    return __performanceOriginalForecastRerollOffer(...)
 end
 function CreateScreenComponent(args)
     __performanceNextComponent = __performanceNextComponent + 1
@@ -268,7 +268,7 @@ check(lua.eval("__performanceForecastCalls") == calls_before_pom + 1,
       "Pom rerolls still complete synchronously from their small pool")
 build()
 lua.execute("""
-BoonAdvisor.ForecastRerollPool = __performanceOriginalForecastRerollPool
+BoonAdvisor.ForecastRerollOffer = __performanceOriginalForecastRerollOffer
 thread = nil
 wait = nil
 CreateScreenComponent = nil
