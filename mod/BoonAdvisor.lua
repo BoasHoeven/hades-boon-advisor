@@ -37,21 +37,22 @@ Import "../Mods/BoonAdvisor/BA_Exclusions.lua"
 Import "../Mods/BoonAdvisor/BA_Purge.lua"
 Import "../Mods/BoonAdvisor/BA_Forecast.lua"
 Import "../Mods/BoonAdvisor/BA_Doors.lua"
+Import "../Mods/BoonAdvisor/BA_Well.lua"
 Import "../Mods/BoonAdvisor/BA_Rerolls.lua"
 Import "../Mods/BoonAdvisor/BA_UI.lua"
 Import "../Mods/BoonAdvisor/BA_Keepsakes.lua"
 Import "../Mods/BoonAdvisor/BA_Story.lua"
 Import "../Mods/BoonAdvisor/BA_Telemetry.lua"
 
-BoonAdvisor.Version = "1.13.0"
+BoonAdvisor.Version = "1.14.0"
 
 -- Never let a scoring bug take down a run: the vanilla screen is already built
 -- by the time we draw, so swallowing our own errors leaves the game playable.
 -- Returns the wrapped call's first result, or nil when it failed, so callers
 -- that branch on a helper's return value stay protected too.
-function BoonAdvisor.SafeCall( fn, arg )
+function BoonAdvisor.SafeCall( fn, arg, arg2 )
 	if pcall ~= nil then
-		local success, result = pcall( fn, arg )
+		local success, result = pcall( fn, arg, arg2 )
 		if not success then
 			if DebugPrint ~= nil then
 				DebugPrint({ LogOnly = true, Text = "[BoonAdvisor] error: " .. tostring( result ) })
@@ -60,7 +61,7 @@ function BoonAdvisor.SafeCall( fn, arg )
 		end
 		return result
 	else
-		return fn( arg )
+		return fn( arg, arg2 )
 	end
 end
 
@@ -73,6 +74,14 @@ function BoonAdvisor.SafeDrawOverlay( lootData, perfSession )
 	else
 		BoonAdvisor.DrawOverlay( lootData, perfSession )
 	end
+end
+
+-- The combat hooks below (gold, healing, max health, Death Defiance) fire
+-- constantly; only a cleared room with rated doors has anything to refresh.
+local function doorsAwaitingRefresh()
+	return CurrentRun ~= nil
+		and BoonAdvisor.DoorCandidateRoom == CurrentRun.CurrentRoom
+		and not IsEmpty( BoonAdvisor.DoorCandidates or {} )
 end
 
 -- Guard against double-wrapping if the scripts are reloaded in place.
@@ -273,7 +282,10 @@ if not BoonAdvisor.Installed then
 
 	if BoonAdvisor.Vanilla_LeaveRoom ~= nil then
 		function LeaveRoom( currentRun, door )
+			-- Both lines describe the room being left, so they must be written
+			-- before vanilla swaps CurrentRoom for the next one.
 			BoonAdvisor.SafeCall( BoonAdvisor.LogDoorChoice, door )
+			BoonAdvisor.SafeCall( BoonAdvisor.LogRoomOutcome, currentRun, door )
 			return BoonAdvisor.Vanilla_LeaveRoom( currentRun, door )
 		end
 	end
@@ -315,6 +327,38 @@ if not BoonAdvisor.Installed then
 		return result
 	end
 
+	--[[
+		The Well of Charon is a screen, not a room of items: UseWellShop ->
+		StartUpStore -> ShowStoreScreen -> CreateStoreButtons builds one
+		purchase button per StoreOptions entry. Nothing above runs for it.
+	]]
+	BoonAdvisor.Vanilla_CreateStoreButtons =
+		BoonAdvisor.Vanilla_CreateStoreButtons or CreateStoreButtons
+
+	if BoonAdvisor.Vanilla_CreateStoreButtons ~= nil then
+		function CreateStoreButtons()
+			local result = BoonAdvisor.Vanilla_CreateStoreButtons()
+			BoonAdvisor.SafeCall( BoonAdvisor.DrawWellOverlay )
+			return result
+		end
+	end
+
+	BoonAdvisor.Vanilla_HandleStorePurchase =
+		BoonAdvisor.Vanilla_HandleStorePurchase or HandleStorePurchase
+
+	if BoonAdvisor.Vanilla_HandleStorePurchase ~= nil then
+		function HandleStorePurchase( screen, button )
+			-- The button is destroyed by the purchase; log it while it exists.
+			BoonAdvisor.SafeCall( BoonAdvisor.LogWellChoice, button )
+			local result = BoonAdvisor.Vanilla_HandleStorePurchase( screen, button )
+			BoonAdvisor.SafeCall( function()
+				BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
+			end )
+			BoonAdvisor.SafeCall( BoonAdvisor.DrawWellOverlay )
+			return result
+		end
+	end
+
 	BoonAdvisor.Vanilla_HandleLootPickup = BoonAdvisor.Vanilla_HandleLootPickup or HandleLootPickup
 
 	function HandleLootPickup( currentRun, loot )
@@ -354,6 +398,8 @@ if not BoonAdvisor.Installed then
 		BoonAdvisor.Vanilla_HandleSellChoiceSelection or HandleSellChoiceSelection
 	if BoonAdvisor.Vanilla_HandleSellChoiceSelection ~= nil then
 		function HandleSellChoiceSelection( screen, button )
+			-- Logged first: vanilla removes the boon and destroys the button.
+			BoonAdvisor.SafeCall( BoonAdvisor.LogPurgeChoice, screen, button )
 			local result = BoonAdvisor.Vanilla_HandleSellChoiceSelection( screen, button )
 			BoonAdvisor.SafeCall( function()
 				BoonAdvisor.MarkRunStateDirty({ BuildChanged = true })
@@ -366,7 +412,9 @@ if not BoonAdvisor.Installed then
 	if BoonAdvisor.Vanilla_AddMoney ~= nil then
 		function AddMoney( amount, source )
 			local result = BoonAdvisor.Vanilla_AddMoney( amount, source )
-			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			if doorsAwaitingRefresh() then
+				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			end
 			return result
 		end
 	end
@@ -375,7 +423,9 @@ if not BoonAdvisor.Installed then
 	if BoonAdvisor.Vanilla_SpendMoney ~= nil then
 		function SpendMoney( amount, source )
 			local result = BoonAdvisor.Vanilla_SpendMoney( amount, source )
-			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			if doorsAwaitingRefresh() then
+				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			end
 			return result
 		end
 	end
@@ -384,7 +434,9 @@ if not BoonAdvisor.Installed then
 	if BoonAdvisor.Vanilla_AddMaxHealth ~= nil then
 		function AddMaxHealth( healthGained, source, args )
 			local result = BoonAdvisor.Vanilla_AddMaxHealth( healthGained, source, args )
-			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			if doorsAwaitingRefresh() then
+				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			end
 			return result
 		end
 	end
@@ -393,7 +445,9 @@ if not BoonAdvisor.Installed then
 	if BoonAdvisor.Vanilla_AddLastStand ~= nil then
 		function AddLastStand( args )
 			local result = BoonAdvisor.Vanilla_AddLastStand( args )
-			BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			if doorsAwaitingRefresh() then
+				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
+			end
 			return result
 		end
 	end
@@ -402,7 +456,7 @@ if not BoonAdvisor.Installed then
 	if BoonAdvisor.Vanilla_Heal ~= nil then
 		function Heal( victim, triggerArgs )
 			local result = BoonAdvisor.Vanilla_Heal( victim, triggerArgs )
-			if CurrentRun ~= nil and victim == CurrentRun.Hero then
+			if CurrentRun ~= nil and victim == CurrentRun.Hero and doorsAwaitingRefresh() then
 				BoonAdvisor.SafeCall( BoonAdvisor.MarkRunStateDirty )
 			end
 			return result
@@ -453,13 +507,16 @@ if not BoonAdvisor.Installed then
 		line appears in BoonAdvisor-runs.log after one launch, or the file
 		logger is unavailable and LogChannel will say "debugprint".
 
-		It also separates picks from different sessions.
+		The ratings fingerprint separates sessions played with different
+		tunings, so the analyzer never averages old and new weights together.
 	]]
 	if BoonAdvisor.Config.LogPicks then
 		BoonAdvisor.LogLine( "" )
 		BoonAdvisor.LogLine( "=== BoonAdvisor v" .. BoonAdvisor.Version
-			.. " loaded | channel: " .. tostring( BoonAdvisor.LogChannel or "none" )
-			.. " | SaveIgnores pre-existed: " .. tostring( saveIgnoresPreexisted ) .. " ===" )
+			.. " objective=" .. tostring( BoonAdvisor.ActiveObjectiveName() )
+			.. " ratings=" .. tostring( BoonAdvisor.SafeCall( BoonAdvisor.ConfigFingerprint ) or "?" )
+			.. " channel=" .. tostring( BoonAdvisor.LogChannel or "none" )
+			.. " saveignores=" .. tostring( saveIgnoresPreexisted ) .. " ===" )
 		BoonAdvisor.SafeCall( BoonAdvisor.LogRunStart, CurrentRun )
 	end
 

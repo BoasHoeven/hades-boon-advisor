@@ -706,3 +706,65 @@ Recorded so the same mistakes are not repeated:
 7. **Invented trait names** (`SwordCastTrait`, `GunGrenadeSelfDamageTrait`).
    A wrong key is not an error in Lua; it silently never matches. Every name in
    this mod's tables is now asserted against `TraitData` by the test suite.
+
+## 14. Screens and terms added in v1.14
+
+### 14a. The Well of Charon is a screen, not a room of items
+
+Charon's shop rooms spawn their stock into the world through
+`SpawnStoreItemsInWorld` / `SpawnStoreItemInWorld` (StoreScripts.lua). The
+Well is different: `UseWellShop` (Interactables.lua:436) calls `StartUpStore`,
+which fills `CurrentRun.CurrentRoom.Store.StoreOptions` from
+`StoreData.RoomShop` and opens a screen whose purchase buttons are built by
+`CreateStoreButtons` (StoreScripts.lua:561). Each button carries the processed
+item in `components["PurchaseButton"..i].Data`, with `Name`, `Type`, `Cost`
+and, for Broker deals, `HealthCost`. `HandleStorePurchase` (StoreScripts.lua:835)
+spends the gold, removes the entry from `StoreOptions` and destroys that
+button; `RerollStore` destroys every button and rebuilds them.
+
+The vanilla description text is attached to the purchase button itself, so
+the advisor's badge lives on its own `BlankObstacle` anchor, registered in
+`Screen.Components` as `BoonAdvisorWell<i>` so `CloseStoreScreen`'s
+`CloseScreen( GetAllIds( components ) )` destroys it with the rest.
+
+### 14b. Hammers change hit cadence
+
+`Ratings.WeaponHitClass` and `Ratings.AspectHitClass` describe how often the
+Attack and Special hit, which decides whether flat on-hit boons (Zeus,
+Dionysus) or big multipliers (Aphrodite, Artemis) fit a slot. Several hammers
+rebuild the move: Flurry Jab (`SpearAutoAttack`) makes the spear a rapid jab,
+Flurry Shot (`BowTapFireTrait`) makes the bow rapid-fire, Spread Fire
+(`GunShotgunTrait`) turns the rail's bullet stream into a few heavy pellets,
+Cluster Bomb (`GunGrenadeClusterTrait`) splits the bomb into many small ones.
+`Ratings.HammerHitClass` lists these and `CurrentHitClass` consults a held
+hammer before the aspect and weapon tables.
+
+### 14c. Trial of the Gods: the refused god fights you
+
+`StartDevotionTest` (RoomEvents.lua:1669) calls
+`AddEnemyUpgrade( alternateLootData.Name )` for the god you did not pick and,
+when `EnemyData[<God>RoomWeapon]` exists, spawns that god's room weapon. The
+danger differs a lot by god (Ares blade rifts and Zeus chain lightning versus
+Athena deflect), so `Config.Doors.TrialSpurnedRisk` charges the Trial for the
+god the advisor expects you to refuse: the lower-scored of the two.
+
+### 14d. Fated Authority
+
+`AssignRoomToExitDoor` (RoomManager.lua:4984) marks a door `CanBeRerolled`
+when `IsMetaUpgradeSelected( "RerollMetaUpgrade" )` and the door allows it;
+`AttemptRerollDoor` (Interactables.lua:1356) then replaces that one door's
+reward with `ChooseRoomReward`, excluding the rewards already offered. The
+advisor suggests a reroll only when a die is left, some exit can be
+rerolled, and no enterable exit reaches the biome's usual door value
+(`Config.Doors.RerollAdvice`).
+
+### 14e. Room outcomes the game already records
+
+With `LogPicks` on, one `[room ]` line is written from the `LeaveRoom` hook,
+before vanilla swaps `CurrentRoom`. Its fields come from state vanilla keeps
+for its own purposes: `Encounter.ClearTime` (RoomManager.lua:2563),
+`Encounter.PlayerTookDamage` (Combat.lua:1188), the global per-room
+`DamageRecord` keyed by attacker name (Combat.lua:1209, reset in `StartRoom`),
+`CurrentRun.BiomeTime` when the Tight Deadline timer is active, and the hero's
+health. `[run-end]` adds `LastKilledByUnitName` (DeathLoop.lua:31) and the
+sum of `CurrentRun.DamageRecord`.

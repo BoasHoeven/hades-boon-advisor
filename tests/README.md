@@ -15,7 +15,8 @@ Hades is found automatically; override with `HADES_PATH=/path/to/Hades`.
 
 | Script | What it does |
 | --- | --- |
-| `test_boonadvisor.py` | 100+ assertions across scoring, exclusions, the Mirror, doors, shop, keepsakes, save safety |
+| `test_boonadvisor.py` | 100+ assertions across scoring, exclusions, the Mirror, doors, shop, the Well, keepsakes, telemetry, save safety |
+| `oracle.lua` | The high-sample sampling oracle the differential tests compare the exact forecasts against. Loaded by the harness after the mod; not part of the mod |
 | `validate_aspects.py` | Checks all 24 aspects steer toward their configured archetype |
 | `exhaustive_offers.py` | Scores every legal installed-game candidate for all 24 aspects and all three objectives |
 | `test_analyzer.py` | Checks the read-only save decoder and telemetry parser |

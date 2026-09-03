@@ -250,6 +250,12 @@ end
 G["__modpath"] = MOD
 G["__pathsep"] = os.sep
 load(os.path.join(MOD, "BoonAdvisor.lua"))
+# The sampling oracle is test tooling, not part of the mod. Prove the mod does
+# not ship it, then load it for the differential checks below.
+MOD_SHIPS_ORACLE = (lua.eval("BoonAdvisor.SimulateReroll") is not None
+                    or lua.eval("BoonAdvisor.SimulateInitialOffer") is not None
+                    or G["BoonAdvisor"]["Config"]["AllowLiveSimulationFallback"] is not None)
+load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "oracle.lua"))
 DEFAULT_REROLL_SAMPLES = G["BoonAdvisor"]["Config"]["RerollSimulationSamples"]
 DEFAULT_DOOR_SAMPLES = G["BoonAdvisor"]["Config"]["DoorOfferSimulationSamples"]
 G["BoonAdvisor"]["Config"]["RerollSimulationSamples"] = 96
@@ -265,9 +271,39 @@ setbuild = lua.eval("SetBuild")
 mklist = lua.eval("function(...) return {...} end")
 traitdata = lua.eval("TraitData")
 
+# The equipped weapon follows the aspect in the build. Pinning every build to
+# the bow made the hit-class terms evaluate non-bow aspects with bow cadence.
+ASPECT_WEAPON = {
+    "SwordBaseUpgradeTrait": "SwordWeapon", "SwordCriticalParryTrait": "SwordWeapon",
+    "DislodgeAmmoTrait": "SwordWeapon", "SwordConsecrationTrait": "SwordWeapon",
+    "SpearBaseUpgradeTrait": "SpearWeapon", "SpearTeleportTrait": "SpearWeapon",
+    "SpearWeaveTrait": "SpearWeapon", "SpearSpinTravel": "SpearWeapon",
+    "ShieldBaseUpgradeTrait": "ShieldWeapon", "ShieldRushBonusProjectileTrait": "ShieldWeapon",
+    "ShieldTwoShieldTrait": "ShieldWeapon", "ShieldLoadAmmoTrait": "ShieldWeapon",
+    "BowBaseUpgradeTrait": "BowWeapon", "BowMarkHomingTrait": "BowWeapon",
+    "BowLoadAmmoTrait": "BowWeapon", "BowBondTrait": "BowWeapon",
+    "FistBaseUpgradeTrait": "FistWeapon", "FistVacuumTrait": "FistWeapon",
+    "FistWeaveTrait": "FistWeapon", "FistDetonateTrait": "FistWeapon",
+    "GunBaseUpgradeTrait": "GunWeapon", "GunGrenadeSelfEmpowerTrait": "GunWeapon",
+    "GunManualReloadTrait": "GunWeapon", "GunLoadedGrenadeTrait": "GunWeapon",
+}
+
+
+_weapon_from_aspect = False
+
 
 def build(*traits):
+    global _weapon_from_aspect
     setbuild(mklist(*traits))
+    aspect = next((t for t in traits if t in ASPECT_WEAPON), None)
+    if aspect is not None:
+        G["__weapon"] = ASPECT_WEAPON[aspect]
+        _weapon_from_aspect = True
+    elif _weapon_from_aspect:
+        # A build without an aspect returns to the bow default; a weapon a
+        # test set by hand (__weapon = ...) is left alone.
+        G["__weapon"] = "BowWeapon"
+        _weapon_from_aspect = False
 
 
 def boon(name, rarity="Common", typ="Trait", **kw):
@@ -1481,9 +1517,9 @@ print("   darkness door: %d -> %d  (%s)" % (dark_off[0], dark_on[0], dark_on[2])
 check(dark_on[0] < dark_off[0], "a Darkness cap devalues Darkness rewards")
 
 print("\n=== reroll advice ===")
-check(not G["BoonAdvisor"]["Config"]["AllowLiveSimulationFallback"]
+check(not MOD_SHIPS_ORACLE
 	  and DEFAULT_REROLL_SAMPLES >= 256 and DEFAULT_DOOR_SAMPLES >= 256,
-	  "live advice is deterministic while high-sample simulators remain test oracles")
+	  "the sampling oracle is test tooling (tests/oracle.lua), not shipped in the mod")
 G["BoonAdvisor"]["Config"]["DoorOfferSimulationSamples"] = 48
 fresh_offer = lua.eval("BoonAdvisor.SimulateInitialOffer")(
     lua.table(Name="ZeusUpgrade",
@@ -1633,8 +1669,8 @@ epic_loot = lua.table(Name="ZeusUpgrade", ObjectId=707,
                       RarityChances=lua.table(Rare=0, Epic=1),
                       RerollPool=regular_pool,
                       UpgradeOptions=regular_loot["UpgradeOptions"])
-common_ev = lua.eval("BoonAdvisor.ForecastRerollPool")(common_loot, 0)["ExpectedScore"]
-epic_ev = lua.eval("BoonAdvisor.ForecastRerollPool")(epic_loot, 0)["ExpectedScore"]
+common_ev = lua.eval("BoonAdvisor.ForecastRerollOffer")(common_loot, 0)["ExpectedScore"]
+epic_ev = lua.eval("BoonAdvisor.ForecastRerollOffer")(epic_loot, 0)["ExpectedScore"]
 check(epic_ev > common_ev,
       "future rarity rolls are included in reroll expected value")
 
@@ -1658,13 +1694,13 @@ approval_loot_3 = lua.table(Name="ZeusUpgrade", ObjectId=708,
                             RerollPool=regular_pool,
                             UpgradeOptions=regular_loot["UpgradeOptions"])
 lua.execute("function CalcNumLootChoices() return 3 end")
-three_visible = lua.eval("BoonAdvisor.ForecastRerollPool")(approval_loot_3, 0)["ExpectedScore"]
+three_visible = lua.eval("BoonAdvisor.ForecastRerollOffer")(approval_loot_3, 0)["ExpectedScore"]
 approval_loot_1 = lua.table(Name="ZeusUpgrade", ObjectId=709,
                             RarityChances=lua.table(Rare=0, Epic=0),
                             RerollPool=regular_pool,
                             UpgradeOptions=regular_loot["UpgradeOptions"])
 lua.execute("function CalcNumLootChoices() return 1 end")
-one_visible = lua.eval("BoonAdvisor.ForecastRerollPool")(approval_loot_1, 0)["ExpectedScore"]
+one_visible = lua.eval("BoonAdvisor.ForecastRerollOffer")(approval_loot_1, 0)["ExpectedScore"]
 lua.execute("function CalcNumLootChoices() return 3 end")
 check(three_visible > one_visible,
       "Approval Process lowers reroll expected value")
@@ -1878,6 +1914,14 @@ __healthDoor = { ObjectId = 802, Room = { ChosenRewardType = "Health" } }
 BoonAdvisor.DoorCandidateRoom = CurrentRun.CurrentRoom
 BoonAdvisor.DoorCandidates = { [801] = __shopDoor, [802] = __healthDoor }
 BoonAdvisor.LogDoorChoice(__healthDoor)
+CurrentRun.CurrentRoom.Name = "A_Combat05"
+CurrentRun.CurrentRoom.Encounter = { Name = "GeneratedA", EncounterType = "Default",
+    ClearTime = 31.4, PlayerTookDamage = true }
+DamageRecord = { Thug = 12, Wretch = 7 }
+BoonAdvisor.LogRoomOutcome(CurrentRun, __healthDoor)
+DamageRecord = nil
+CurrentRun.DamageRecord = { Thug = 12, Wretch = 7, Megaera = 40 }
+LastKilledByUnitName = "Megaera"
 GameState.LastAwardTrait = "ShieldBossTrait"
 BoonAdvisor.LastKeepsakeEvaluation =
     BoonAdvisor.EvaluateKeepsakeRack(__availableKeepsakes)
@@ -1901,9 +1945,16 @@ lua.execute("BoonAdvisor.Config.LogPicks = false")
 check(any("[offer]" in l for l in logged), "the offer and its scores are logged")
 check(any("weapon=" in l and "hp=" in l and "loot=ZeusUpgrade" in l for l in logged),
       "offer logs include enough run context to audit the decision")
-check(any("*Divine Dash" in l for l in logged), "the recommendation is marked")
-check(any("[took" in l and "Lightning Strike" in l for l in logged),
-      "the pick actually taken is logged")
+check(any("*AthenaRushTrait=" in l for l in logged), "the recommendation is marked")
+check(any("[took" in l and "taken=ZeusWeaponTrait" in l and "kind=boon" in l
+          and "margin=" in l and "recommended=AthenaRushTrait" in l for l in logged),
+      "the pick actually taken is logged with its kind and margin")
+check(any("[offer]" in l and "base=" in l and "slot=" in l for l in logged),
+      "offer lines carry the per-term score breakdown")
+check(any("[room ]" in l and "damage_taken=" in l and "clear=" in l for l in logged),
+      "leaving a room logs the room outcome")
+check(any("[run-end]" in l and "killer=" in l and "damage_taken=" in l for l in logged),
+      "run summaries name the killer and total damage taken")
 check(any("[door ]" in l and "gold=30" in l and "took=Health" in l
           and "*Health=70" in l for l in logged),
       "door telemetry records the purse, recommendation, alternatives, and choice")
@@ -2377,12 +2428,18 @@ if len(gate) >= 1:
 # A normal door must not be double-drawn by both hooks.
 lua.execute("""
 __boxes = {}
-__d = { ObjectId = 777, Room = { ChosenRewardType = "Money" } }
+__d = { ObjectId = 777, DoorIconId = 1777, Room = { ChosenRewardType = "Money" } }
 AssignRoomToExitDoor(__d, __d.Room)
 CreateDoorRewardPreview(__d)
 """)
-check(len(G["__boxes"]) == 2,
-      "a normal door is drawn exactly once (got %d lines)" % len(G["__boxes"]))
+door_lines = [G["__boxes"][i]["Id"] for i in range(1, len(G["__boxes"]) + 1)]
+check(door_lines.count(1777) == 2,
+      "a normal door is drawn exactly once (got %d lines)" % door_lines.count(1777))
+check(door_lines.count(555) <= 2,
+      "the Chaos gate is redrawn at most once when a second door changes its margin")
+lua.execute("__boxes = {}; CreateDoorRewardPreview(__d)")
+check(len(G["__boxes"]) == 0,
+      "a refresh that changes nothing draws nothing (no flicker)")
 
 # Infernal Gates are spawned even when the run has too little Heat. They may
 # still show their score, but an option the player cannot enter must never get
@@ -2599,8 +2656,13 @@ lua.execute("""
 __boxes = {}
 HandleUpgradeChoiceSelection({}, { Data = { Name = "AphroditeWeaponTrait" } })
 """)
-check(len(G["__boxes"]) == 8,
-      "remaining shop stock is rescored after a purchased boon is applied")
+sb = G["__boxes"]
+redrawn = [(sb[i]["Id"], sb[i]["LuaValue"]["BALine"]) for i in range(1, len(sb) + 1)]
+for oid, t in redrawn:
+    print("   redrawn id=%s  %s" % (oid, t))
+check(any(oid == 901 for oid, _ in redrawn) and 0 < len(redrawn) < 8,
+      "remaining shop stock is rescored after a purchased boon is applied, "
+      "and only the badges that changed are redrawn (%d lines)" % len(redrawn))
 
 lua.execute("""
 __boxes = {}
@@ -2763,6 +2825,363 @@ b2 = lua.eval("__unsaveable()")
 caught = any(str(b2[i]).startswith("__canary") for i in range(1, len(b2) + 1))
 lua.execute("__canary = nil")
 check(caught, "the save check actually detects a nested function")
+
+###########################################################################
+print("\n=== v1.14: build progress, scarcity, cadence, boss preparation ===")
+lua.execute("CurrentRun.CurrentRoom = {}; CurrentRun.BiomeDepthCache = nil; CurrentRun.Money = 500")
+lua.execute("CurrentRun.Hero.Health = 100; CurrentRun.Hero.MaxHealth = 100")
+
+# D2: on Chiron with Curse of Pain and Divine Dash, Merciful End on the Ares
+# screen used to lose to Heartbreak Strike because the Hangover route paid
+# its full core bonus from the aspect alone.
+build("BowMarkHomingTrait", "AresSecondaryTrait", "AthenaRushTrait")
+merciful = score(lua.table(ItemName="TriggerCurseTrait", Rarity="Legendary", Type="Trait"),
+                 lua.table(Name="AresUpgrade"))
+heartbreak = score(lua.table(ItemName="AphroditeWeaponTrait", Rarity="Common", Type="Trait"),
+                   lua.table(Name="AphroditeUpgrade"))
+check(merciful["Unclamped"] > heartbreak["Unclamped"] + 8,
+      "a duo the run built toward outranks a plain core boon on Chiron (%.1f vs %.1f)"
+      % (merciful["Unclamped"], heartbreak["Unclamped"]))
+check(merciful["Terms"]["scarcity"] == 12 and heartbreak["Terms"]["scarcity"] is None,
+      "duo and legendary offers carry the scarcity credit, ordinary boons do not")
+archetype_bonus = lua.eval("BoonAdvisor.ArchetypeBonus")
+build("BowMarkHomingTrait")
+uncommitted = archetype_bonus("AphroditeWeaponTrait")[0]
+build("BowMarkHomingTrait", "DionysusSecondaryTrait")
+committed = archetype_bonus("AphroditeWeaponTrait")[0]
+check(0 < uncommitted < committed,
+      "an aspect route pays its full core bonus only once a core boon is held (%.1f -> %.1f)"
+      % (uncommitted, committed))
+
+# D3: a utility duo keeps little of the completion bonus.
+linked_scale = lua.eval("BoonAdvisor.LinkedValueScale")
+check(linked_scale("AmmoBoltTrait") <= 0.3 and linked_scale("TriggerCurseTrait") >= 1.0,
+      "Lightning Rod keeps %.2f of the completion bonus, Merciful End %.2f"
+      % (linked_scale("AmmoBoltTrait"), linked_scale("TriggerCurseTrait")))
+
+# D4: the Zagreus fists opener no longer outvotes the hit class.
+build("FistBaseUpgradeTrait")
+fists = {name: boon(name) for name in
+         ("ZeusWeaponTrait", "DemeterWeaponTrait", "AphroditeWeaponTrait")}
+check(all((r["Terms"]["archetype"] or 0) < 6 for r in fists.values())
+      and fists["ZeusWeaponTrait"]["Terms"]["hit"] == 10
+      and fists["ZeusWeaponTrait"]["Score"] > fists["AphroditeWeaponTrait"]["Score"] - 2,
+      "the fists opener steers lightly and cadence carries Lightning Strike (%s)"
+      % {k[:-11]: v["Score"] for k, v in fists.items()})
+
+# E1: hammers that change a move's cadence change its hit class.
+build("SpearBaseUpgradeTrait")
+plain_spear = boon("ZeusWeaponTrait")["Terms"]["hit"] or 0
+build("SpearBaseUpgradeTrait", "SpearAutoAttack")
+flurry_spear = boon("ZeusWeaponTrait")["Terms"]["hit"] or 0
+check(plain_spear == 0 and flurry_spear > 0,
+      "Flurry Jab turns the spear attack into a fast slot for Lightning Strike (%d -> %d)"
+      % (plain_spear, flurry_spear))
+build("GunBaseUpgradeTrait", "GunShotgunTrait")
+check((boon("AphroditeWeaponTrait")["Terms"]["hit"] or 0) > 0,
+      "Spread Fire makes the rail attack a slow slot that suits Heartbreak Strike")
+hammer_classes = list(lua.eval("BoonAdvisor.Ratings.HammerHitClass").keys())
+check(all(traitdata[name] is not None for name in hammer_classes),
+      "every hammer in HammerHitClass is a real trait (%d)" % len(hammer_classes))
+
+# E5: the boss is close, so survival is worth more.
+build()
+lua.execute("CurrentRun.CurrentRoom = { RoomSetName = 'Elysium' }; CurrentRun.BiomeDepthCache = 8")
+near_boss = boon("AthenaRushTrait")["Terms"]["boss"] or 0
+near_max_health = score(lua.table(ItemName="ChaosBlessingMaxHealthTrait",
+                                  SecondaryItemName="ChaosCurseNoMoneyTrait",
+                                  Type="TransformingTrait", Rarity="Common"),
+                        lua.table(Name="TrialUpgrade"))["RawScore"]
+near_money = score(lua.table(ItemName="ChaosBlessingMoneyTrait",
+                             SecondaryItemName="ChaosCurseNoMoneyTrait",
+                             Type="TransformingTrait", Rarity="Common"),
+                   lua.table(Name="TrialUpgrade"))["RawScore"]
+lua.execute("CurrentRun.BiomeDepthCache = 2")
+far_boss = boon("AthenaRushTrait")["Terms"]["boss"] or 0
+far_max_health = score(lua.table(ItemName="ChaosBlessingMaxHealthTrait",
+                                 SecondaryItemName="ChaosCurseNoMoneyTrait",
+                                 Type="TransformingTrait", Rarity="Common"),
+                       lua.table(Name="TrialUpgrade"))["RawScore"]
+far_money = score(lua.table(ItemName="ChaosBlessingMoneyTrait",
+                            SecondaryItemName="ChaosCurseNoMoneyTrait",
+                            Type="TransformingTrait", Rarity="Common"),
+                  lua.table(Name="TrialUpgrade"))["RawScore"]
+check(near_boss > 0 and far_boss == 0,
+      "survival boons gain value in the rooms before the boss (+%.1f near, +%.1f far)"
+      % (near_boss, far_boss))
+check((near_max_health - far_max_health) > (near_money - far_money),
+      "a survival Chaos blessing gains more than a gold blessing as the boss nears")
+lua.execute("CurrentRun.CurrentRoom = {}; CurrentRun.BiomeDepthCache = nil")
+
+# E4: the Trial charges for the god you refuse.
+build("AphroditeWeaponTrait")
+trial_room = lua.table(ChosenRewardType="Devotion",
+                       Encounter=lua.table(LootAName="AresUpgrade", LootBName="AthenaUpgrade"))
+spurned_costed = scoredoor(trial_room)[0]
+spurned_table = G["BoonAdvisor"]["Config"]["Doors"]["TrialSpurnedRisk"]
+G["BoonAdvisor"]["Config"]["Doors"]["TrialSpurnedRisk"] = lua.table()
+spurned_free = scoredoor(trial_room)[0]
+G["BoonAdvisor"]["Config"]["Doors"]["TrialSpurnedRisk"] = spurned_table
+check(spurned_costed < spurned_free,
+      "a Trial pays for the powers the refused god gives the enemies (%.1f vs %.1f)"
+      % (spurned_costed, spurned_free))
+
+# E3: "none of these" when a new god's screen is weak and the pool is full.
+build("ZeusWeaponTrait", "AresSecondaryTrait", "ArtemisRushTrait")
+offer_verdict = lua.eval("BoonAdvisor.OfferVerdict")
+check(offer_verdict(lua.table(Name="DemeterUpgrade"), lua.table(Score=50)) == "skip"
+      and offer_verdict(lua.table(Name="DemeterUpgrade"), lua.table(Score=80)) is None
+      and offer_verdict(lua.table(Name="ZeusUpgrade"), lua.table(Score=50)) is None
+      and offer_verdict(lua.table(Name="StackUpgrade"), lua.table(Score=50)) is None,
+      "a weak screen from a new god on a full pool gets the 'none of these' verdict")
+lua.execute("""
+__boxes = {}
+CreateBoonLootButtons({ Name = "DemeterUpgrade", UpgradeOptions = {
+    { ItemName = "TrapDamageTrait", Rarity = "Common", Type = "Trait" },
+    { ItemName = "ChamberGoldTrait", Rarity = "Common", Type = "Trait" } }}, false)
+""")
+verdict_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(any(t.startswith("none of these") for t in verdict_lines),
+      "the star's reason says walking away is fine (%r)" % verdict_lines)
+lua.execute("""
+__boxes = {}
+CreateBoonLootButtons({ Name = "ZeusUpgrade", UpgradeOptions = {
+    { ItemName = "TrapDamageTrait", Rarity = "Common", Type = "Trait" },
+    { ItemName = "ChamberGoldTrait", Rarity = "Common", Type = "Trait" } }}, false)
+""")
+verdict_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(not any(t.startswith("none of these") for t in verdict_lines),
+      "a god already in the build never gets the verdict, however weak the screen")
+
+# C2: the starred badge shows the margin over the runner-up.
+build()
+lua.execute("""
+__boxes = {}
+CreateBoonLootButtons({ Name = "ZeusUpgrade", UpgradeOptions = {
+    { ItemName = "AthenaRushTrait", Rarity = "Common", Type = "Trait" },
+    { ItemName = "ZeusWeaponTrait", Rarity = "Common", Type = "Trait" } }}, false)
+""")
+badge_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+starred = [t for t in badge_lines if t.startswith("*")]
+check(len(starred) == 1 and re.match(r"^\* [SABCD]  \d+  \+\d+$", starred[0]) is not None,
+      "the starred badge carries the margin over the runner-up (%r)" % starred)
+G["BoonAdvisor"]["Config"]["ShowBestMargin"] = False
+lua.execute("""
+__boxes = {}
+CreateBoonLootButtons({ Name = "ZeusUpgrade", UpgradeOptions = {
+    { ItemName = "AthenaRushTrait", Rarity = "Common", Type = "Trait" },
+    { ItemName = "ZeusWeaponTrait", Rarity = "Common", Type = "Trait" } }}, false)
+""")
+plain_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(not any("+" in t for t in plain_lines if t.startswith("*")),
+      "ShowBestMargin = false hides the margin")
+G["BoonAdvisor"]["Config"]["ShowBestMargin"] = True
+
+# H5: sessions are stamped with a fingerprint of the tuning.
+fingerprint = lua.eval("BoonAdvisor.ConfigFingerprint")
+first = fingerprint()
+lua.execute("BoonAdvisor.ConfigFingerprintCache = nil; BoonAdvisor.Config.Weights.EmptySlot = 9")
+second = fingerprint()
+lua.execute("BoonAdvisor.ConfigFingerprintCache = nil; BoonAdvisor.Config.Weights.EmptySlot = 8")
+check(re.match(r"^[0-9a-f]{8}$", first) is not None and first != second
+      and fingerprint() == first,
+      "the ratings fingerprint is short, stable, and changes with a weight (%s)" % first)
+
+###########################################################################
+print("\n=== v1.14: doors refresh once, advise rerolls, and the Well is rated ===")
+# A3: a shower of coins queues one refresh that waits for the last coin.
+lua.execute("""
+__refreshes = 0
+__originalRefresh = BoonAdvisor.RefreshDoorOverlays
+BoonAdvisor.RefreshDoorOverlays = function(args) __refreshes = __refreshes + 1 end
+__threads = {}
+function thread(fn, args) table.insert(__threads, { Fn = fn, Args = args }) end
+__waits = 0
+function wait(duration)
+    __waits = __waits + 1
+    -- Two more coins land while the first delay is running.
+    if __waits <= 2 then
+        BoonAdvisor.DoorRefreshGeneration = BoonAdvisor.DoorRefreshGeneration + 1
+    end
+end
+BoonAdvisor.DoorRefreshQueuedRoom = nil
+CurrentRun.CurrentRoom = {}
+for _ = 1, 5 do BoonAdvisor.QueueDoorOverlayRefresh() end
+""")
+check(len(G["__threads"]) == 1, "five coins queue a single refresh coroutine")
+lua.execute("__threads[1].Fn(__threads[1].Args)")
+check(lua.eval("__refreshes") == 1 and lua.eval("__waits") == 3,
+      "the refresh runs once, after the delay in which no further coin landed "
+      "(%d refreshes, %d waits)" % (lua.eval("__refreshes"), lua.eval("__waits")))
+lua.execute("""
+BoonAdvisor.RefreshDoorOverlays = __originalRefresh
+thread = nil; wait = nil
+""")
+
+# E2: Fated Authority advice when every enterable exit is poor.
+lua.execute("""
+BoonAdvisor.DoorCandidateRoom = nil
+BoonAdvisor.DoorCandidates = {}
+CurrentRun.CurrentRoom = { RoomSetName = "Tartarus" }
+CurrentRun.NumRerolls = 1
+CurrentRun.Money = 500
+__weakGold = { ObjectId = 811, DoorIconId = 1811, CanBeRerolled = true,
+    Room = { ChosenRewardType = "Money" } }
+__weakGems = { ObjectId = 812, DoorIconId = 1812, CanBeRerolled = true,
+    Room = { ChosenRewardType = "Gems" } }
+BoonAdvisor.RegisterDoor(__weakGold)
+BoonAdvisor.RegisterDoor(__weakGems)
+__boxes = {}
+BoonAdvisor.RefreshDoorOverlays()
+""")
+reroll_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(any(t.startswith("*") and t.endswith("reroll?") for t in reroll_lines),
+      "two poor exits with a die left get the reroll suffix on the star (%r)" % reroll_lines)
+lua.execute("""
+__hammer = { ObjectId = 813, DoorIconId = 1813, CanBeRerolled = true,
+    Room = { ChosenRewardType = "WeaponUpgrade" } }
+BoonAdvisor.RegisterDoor(__hammer)
+__boxes = {}
+BoonAdvisor.RefreshDoorOverlays()
+""")
+reroll_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(not any("reroll?" in t for t in reroll_lines),
+      "a strong exit removes the reroll advice")
+lua.execute("""
+CurrentRun.NumRerolls = 0
+BoonAdvisor.DoorCandidates = { [811] = __weakGold, [812] = __weakGems }
+BoonAdvisor.DoorRegistrationEpoch = (BoonAdvisor.DoorRegistrationEpoch or 0) + 1
+BoonAdvisor.LastDoorEvaluations = nil
+__boxes = {}
+BoonAdvisor.RefreshDoorOverlays()
+""")
+reroll_lines = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(not any("reroll?" in t for t in reroll_lines),
+      "no die left, no reroll advice")
+lua.execute("""
+BoonAdvisor.DoorCandidateRoom = nil
+BoonAdvisor.DoorCandidates = {}
+CurrentRun.CurrentRoom = {}
+""")
+
+# D1: the Well of Charon is a screen built by CreateStoreButtons.
+lua.execute("""
+__wellPurchases = 0
+function CreateStoreButtons()
+    local components = CurrentRun.CurrentRoom.Store.Screen.Components
+    for index, data in ipairs(CurrentRun.CurrentRoom.Store.StoreOptions) do
+        components["PurchaseButton" .. index] = { Id = 1200 + index, Data = data, Index = index }
+    end
+end
+function HandleStorePurchase(screen, button)
+    __wellPurchases = __wellPurchases + 1
+    CurrentRun.Money = CurrentRun.Money - button.Data.Cost
+    screen.Components["PurchaseButton" .. button.Index] = nil
+end
+BoonAdvisor.Installed = nil
+""")
+load(os.path.join(MOD, "BoonAdvisor.lua"))
+load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "oracle.lua"))
+G["BoonAdvisor"]["Config"]["DoorOfferSimulationSamples"] = 0
+lua.execute("function CreateTextBox(a) table.insert(__boxes, a) end")
+build("ZeusWeaponTrait")
+lua.execute("""
+__boxes = {}
+CurrentRun.Money = 200
+CurrentRun.CurrentRoom.Store = { Screen = { Components = {} }, StoreOptions = {
+    { Name = "TemporaryImprovedWeaponTrait", Type = "Trait", Cost = 60 },
+    { Name = "TemporaryDoorHealTrait", Type = "Trait", Cost = 50 },
+    { Name = "KeepsakeChargeDrop", Type = "Consumable", Cost = 20 },
+} }
+CreateStoreButtons()
+""")
+wb = G["__boxes"]
+well_rows = [(wb[i]["Id"], wb[i]["LuaValue"]["BALine"]) for i in range(1, len(wb) + 1)]
+for oid, t in well_rows:
+    print("   well id=%s  %s" % (oid, t))
+well_badges = [t for oid, t in well_rows if re.match(r"^(\* )?[SABCD]  \d+", t)]
+check(len(well_badges) == 3 and sorted(oid for oid, _ in well_rows)[0] == 1201,
+      "the Well draws one badge per purchase button (%d)" % len(well_badges))
+check(sum(1 for t in well_badges if t.startswith("*")) == 1,
+      "exactly one Well item is starred")
+check(any("Improved" not in t and "unrated" not in t for _, t in well_rows),
+      "Well items are rated from Shop.WellItems, not reported as unrated")
+lua.execute("""
+__boxes = {}
+HandleStorePurchase(CurrentRun.CurrentRoom.Store.Screen, CurrentRun.CurrentRoom.Store.Screen.Components.PurchaseButton1)
+""")
+check(lua.eval("__wellPurchases") == 1
+      and G["CurrentRun"]["CurrentRoom"]["Store"]["Screen"]["Components"]["BoonAdvisorWell1"] is None,
+      "a purchase calls through to vanilla and drops the sold item's badge")
+check(any(G["__boxes"][i]["Id"] in (1202, 1203) for i in range(1, len(G["__boxes"]) + 1)),
+      "the remaining Well stock is re-ranked after a purchase")
+
+# H4: Well purchases and purge sales are logged like shop purchases.
+_well_logfile = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                              "picklog_well_test.log")
+if _os.path.exists(_well_logfile):
+    _os.remove(_well_logfile)
+lua.execute("BoonAdvisor.Config.LogPicks = true")
+lua.execute("BoonAdvisor.Config.LogFilePath = [[%s]]" % _well_logfile.replace("\\", "\\\\"))
+lua.execute("""
+CurrentRun.Money = 200
+CurrentRun.CurrentRoom.Store = { Screen = { Components = {} }, StoreOptions = {
+    { Name = "TemporaryImprovedWeaponTrait", Type = "Trait", Cost = 60 },
+    { Name = "KeepsakeChargeDrop", Type = "Consumable", Cost = 20 },
+} }
+CreateStoreButtons()
+HandleStorePurchase(CurrentRun.CurrentRoom.Store.Screen, CurrentRun.CurrentRoom.Store.Screen.Components.PurchaseButton2)
+ScreenAnchors.SellTraitScreen = { Components = {
+    PurchaseButton1 = { Id = 501, UpgradeName = "ZeusWeaponTrait", Value = 60 },
+    PurchaseButton2 = { Id = 502, UpgradeName = "ChamberGoldTrait", Value = 60 } } }
+SetBuild({ "ZeusWeaponTrait", "ChamberGoldTrait" })
+function HandleSellChoiceSelection(screen, button) end
+BoonAdvisor.Vanilla_HandleSellChoiceSelection = HandleSellChoiceSelection
+BoonAdvisor.LogPurgeChoice(ScreenAnchors.SellTraitScreen, ScreenAnchors.SellTraitScreen.Components.PurchaseButton1)
+ScreenAnchors.SellTraitScreen = nil
+""")
+lua.execute("BoonAdvisor.Config.LogPicks = false; BoonAdvisor.Config.LogFilePath = nil")
+well_logged = []
+if _os.path.exists(_well_logfile):
+    well_logged = [l.strip() for l in io.open(_well_logfile, encoding="utf-8") if l.strip()]
+    _os.remove(_well_logfile)
+for line in well_logged:
+    print("   %s" % line)
+check(any(l.startswith("[well ]") and "took=KeepsakeChargeDrop" in l and "margin=" in l
+          and ">" in l for l in well_logged),
+      "a Well purchase is logged with every option, the star and the margin")
+check(any(l.startswith("[purge]") and "took=ZeusWeaponTrait" in l and "*" in l
+          for l in well_logged),
+      "a purge sale is logged with every option and the star")
+lua.execute("CurrentRun.CurrentRoom = {}; CurrentRun.Money = 500")
+
+# C4: in a non-English game the keepsake guidance stays off, like the reasons.
+lua.execute("""
+function GetLanguage(a) return "de" end
+function CreateScreenComponent(args) __nextComponent = (__nextComponent or 5000) + 1; return { Id = __nextComponent } end
+function Attach(args) end
+ScreenAnchors.AwardMenuScreen = { Components = { InfoBackground = { Id = 4000 } } }
+__keepsakeButton = { Id = 3001, BoonAdvisorKeepsakeScore = 70, BoonAdvisorKeepsakeRank = "B",
+    BoonAdvisorKeepsakeColor = { 1, 1, 1, 1 }, BoonAdvisorKeepsakeTrait = "ShieldBossTrait",
+    BoonAdvisorKeepsakeReason = "KEEP: a boss is coming" }
+BoonAdvisor.LastKeepsakeEvaluation = nil
+__boxes = {}
+BoonAdvisor.UpdateKeepsakeDetail(__keepsakeButton)
+""")
+foreign = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(foreign and not any("KEEP" in t or "SWITCH" in t or "BUILD FIT" in t for t in foreign),
+      "a non-English game sees the keepsake grade but no English guidance (%r)" % foreign)
+lua.execute("""
+function GetLanguage(a) return "en" end
+__boxes = {}
+BoonAdvisor.UpdateKeepsakeDetail(__keepsakeButton)
+""")
+english = [G["__boxes"][i]["LuaValue"]["BALine"] for i in range(1, len(G["__boxes"]) + 1)]
+check(any("KEEP" in t for t in english), "an English game sees the KEEP / SWITCH guidance")
+lua.execute("""
+GetLanguage = nil; CreateScreenComponent = nil; Attach = nil
+ScreenAnchors.AwardMenuScreen = nil
+""")
 
 print()
 if FAILURES:

@@ -201,34 +201,46 @@ function BoonAdvisor.GetGodCandidateTraits( lootName, args )
 	return candidates
 end
 
+-- The Olympians the run already holds boons from, as loot names.
+function BoonAdvisor.OwnedGods()
+	local ownedGods = {}
+	for _, trait in pairs( CurrentRun ~= nil and CurrentRun.Hero ~= nil
+		and CurrentRun.Hero.Traits or {} ) do
+		local traitGod = normalizeGodName( trait.God )
+			or BoonAdvisor.GodForTrait( trait.Name )
+		if traitGod ~= nil then ownedGods[traitGod] = true end
+	end
+	return ownedGods, TableLength( ownedGods )
+end
+
+--[[
+	Spreading over too many gods dilutes every duo path. Once the run holds
+	boons from GodPoolSoftCap Olympians, a door (or screen) for a god not yet
+	in the build is penalised. Returns penalty, atCap: atCap says this god is
+	new and the pool is already full, which the boon screen uses for its
+	"none of these" verdict.
+]]
+function BoonAdvisor.GodPoolPenalty( lootName )
+	local doors = BoonAdvisor.Config.Doors
+	local god = normalizeGodName( lootName )
+	if god == nil then return 0, false end
+	local ownedGods, count = BoonAdvisor.OwnedGods()
+	if ownedGods[god] or count < doors.GodPoolSoftCap then return 0, false end
+	return math.min( doors.GodPoolPenaltyCap,
+		( count - doors.GodPoolSoftCap + 1 ) * doors.GodPoolPenaltyPerGod ), true
+end
+
 -- A god door offers K random choices, where Approval Process can reduce K.
--- Score every currently eligible boon with the normal engine, then value the
--- door as the expected best of those K draws rather than the single best boon
--- in the entire pool.
+-- The exact forecast in BA_Forecast values the door as the expected best of
+-- those K draws over the legal offer distribution; the candidate loop below
+-- is only the fallback when no forecast is possible, plus the source of the
+-- "best: X" note when the forecast did not name one.
 function BoonAdvisor.ScoreGodDoor( lootName, args )
 	args = args or {}
 	local doors = BoonAdvisor.Config.Doors
 	local candidates = BoonAdvisor.GetGodCandidateTraits( lootName, args )
 	if IsEmpty( candidates ) then
 		return doors.BoonBase, "no eligible boons found"
-	end
-
-	local values = {}
-	local bestName, bestResult = nil, nil
-	local hasLegendaryCandidate = false
-	for _, traitName in ipairs( candidates ) do
-		local result = BoonAdvisor.ScoreOption(
-			{ ItemName = traitName, Rarity = "Common", Type = "Trait" },
-			{ Name = lootName } )
-		table.insert( values, result.RawScore )
-		if bestResult == nil or result.RawScore > bestResult.RawScore then
-			bestName = traitName
-			bestResult = result
-		end
-		local kind = BoonAdvisor.KindOf( traitName )
-		if kind == "Duo" or kind == "Legendary" then
-			hasLegendaryCandidate = true
-		end
 	end
 
 	local k = 3
@@ -238,9 +250,10 @@ function BoonAdvisor.ScoreGodDoor( lootName, args )
 		k = k - ( GetNumMetaUpgrades( "ReducedLootChoicesShrineUpgrade" ) or 0 )
 	end
 	if k < 1 then k = 1 end
-	if k > TableLength( values ) then k = TableLength( values ) end
+	if k > TableLength( candidates ) then k = TableLength( candidates ) end
 
-	local score = nil
+	local score, bestName, bestResult = nil, nil, nil
+	local forecasted = false
 	if BoonAdvisor.ForecastInitialOffer ~= nil and LootData[lootName] ~= nil then
 		local template = {}
 		for key, value in pairs( LootData[lootName] ) do template[key] = value end
@@ -249,49 +262,65 @@ function BoonAdvisor.ScoreGodDoor( lootName, args )
 		local contextKey = args.Room ~= nil and args.Room.Name or nil
 		local forecast = BoonAdvisor.ForecastInitialOffer( template, contextKey,
 			{ ExcludeDuo = args.ExcludeDuo, YieldWork = args.YieldWork } )
-		if forecast ~= nil then score = forecast.ExpectedScore end
+		if forecast ~= nil then
+			score = forecast.ExpectedScore
+			forecasted = true
+			bestName = forecast.BestName
+		end
 	end
-	local forecasted = score ~= nil
-	if score == nil then score = BoonAdvisor.ExpectedBestOfK( values, k ) end
+
+	local hasLegendaryCandidate = false
+	if not forecasted or bestName == nil then
+		local values = {}
+		for _, traitName in ipairs( candidates ) do
+			local result = BoonAdvisor.ScoreOption(
+				{ ItemName = traitName, Rarity = "Common", Type = "Trait" },
+				{ Name = lootName } )
+			table.insert( values, result.RawScore )
+			if bestResult == nil or result.RawScore > bestResult.RawScore then
+				bestName = traitName
+				bestResult = result
+			end
+			local kind = BoonAdvisor.KindOf( traitName )
+			if kind == "Duo" or kind == "Legendary" then
+				hasLegendaryCandidate = true
+			end
+		end
+		if not forecasted then
+			score = BoonAdvisor.ExpectedBestOfK( values, k )
+		end
+	elseif TableLength( candidates ) <= k then
+		-- Every candidate is shown; the note is the best boon's own reason.
+		bestResult = BoonAdvisor.ScoreOption(
+			{ ItemName = bestName, Rarity = "Common", Type = "Trait" },
+			{ Name = lootName } )
+	end
 	local reason
 	if BoonAdvisor.KindOf( bestName ) ~= nil then
 		reason = "can offer " .. BoonAdvisor.TraitDisplayName( bestName )
-	elseif TableLength( values ) > k then
-		reason = k .. " of " .. TableLength( values ) .. ", best: "
+	elseif TableLength( candidates ) > k then
+		reason = k .. " of " .. TableLength( candidates ) .. ", best: "
 			.. BoonAdvisor.TraitDisplayName( bestName )
 	else
-		reason = bestResult.Reason
+		reason = bestResult ~= nil and bestResult.Reason or "eligible boon pool"
 	end
 
 	--[[
 		Expected rarity, computed from the game's own inputs: base chances,
 		room overrides, the four rarity Mirror talents, and every RarityBonus
 		trait gated on this god (which is how a keepsake lifts its own god).
-		This supersedes the flat keepsake/boost guesses that were here before.
+		The exact forecast already integrates rarity, so only the fallback
+		path adds it here.
 	]]
 	if not forecasted then
 		score = score + BoonAdvisor.ExpectedRarityBonus(
 			lootName, hasLegendaryCandidate, args.Room )
 	end
 
-	local god = normalizeGodName( lootName )
-	if god ~= nil then
-		local ownedGods = {}
-		for _, trait in pairs( CurrentRun ~= nil and CurrentRun.Hero ~= nil
-			and CurrentRun.Hero.Traits or {} ) do
-			local traitGod = normalizeGodName( trait.God )
-				or BoonAdvisor.GodForTrait( trait.Name )
-			if traitGod ~= nil then ownedGods[traitGod] = true end
-		end
-		if not ownedGods[god] then
-			local count = TableLength( ownedGods )
-			if count >= doors.GodPoolSoftCap then
-				local penalty = math.min( doors.GodPoolPenaltyCap,
-					( count - doors.GodPoolSoftCap + 1 ) * doors.GodPoolPenaltyPerGod )
-				score = score - penalty
-				reason = "widens an already full god pool"
-			end
-		end
+	local penalty, atCap = BoonAdvisor.GodPoolPenalty( lootName )
+	if atCap then
+		score = score - penalty
+		reason = "widens an already full god pool"
 	end
 
 	return score, reason
@@ -616,6 +645,11 @@ function BoonAdvisor.ScoreDevotionDoor( room, refreshArgs )
 		local best = math.max( scoreA, scoreB )
 		local second = math.min( scoreA, scoreB )
 		score = best + second * ( doors.DevotionSecondBoonWeight or 0.42 )
+		-- The god you turn down fights you. Its powers on the enemies are the
+		-- real price of the second boon, and they differ a lot by god.
+		local spurned = scoreA >= scoreB and lootB or lootA
+		local spurnedRisk = ( doors.TrialSpurnedRisk or {} )[spurned] or 0
+		score = score - spurnedRisk * pactRisk * BoonAdvisor.ObjectiveRiskMultiplier()
 	end
 	score = score - risk
 
@@ -1087,7 +1121,7 @@ function BoonAdvisor.DrawShopOverlay()
 	end
 
 	local money = CurrentRun ~= nil and CurrentRun.Money or nil
-	local bestIndex, bestScore = nil, nil
+	local bestIndex, bestScore, secondScore = nil, nil, nil
 
 	for index, item in ipairs( items ) do
 		local score, reason = BoonAdvisor.ScoreShopItem( item.ItemData )
@@ -1107,32 +1141,59 @@ function BoonAdvisor.DrawShopOverlay()
 		end
 
 		item.Score = BoonAdvisor.Finalize( score )
+		item.RawScore = score
 		item.Reason = reason
 		item.Affordable = affordable
 
-		if affordable and ( bestScore == nil or item.Score > bestScore ) then
-			bestScore = item.Score
-			bestIndex = index
+		if affordable then
+			if bestScore == nil or score > bestScore then
+				secondScore = bestScore
+				bestScore = score
+				bestIndex = index
+			elseif secondScore == nil or score > secondScore then
+				secondScore = score
+			end
 		end
+	end
+	local margin = nil
+	if bestScore ~= nil and secondScore ~= nil then
+		margin = math.floor( bestScore - secondScore + 0.5 )
 	end
 
 	local layout = config.Shop.Layout
 	for index, item in ipairs( items ) do
-		BoonAdvisor.ClearWorldTextAnchor( item, "OverlayAnchorId", "OwnsOverlayAnchor" )
-		local anchorId, ownsAnchor = BoonAdvisor.CreateWorldTextAnchor( item.ObjectId )
-		item.OverlayAnchorId = anchorId
-		item.OwnsOverlayAnchor = ownsAnchor
-
 		local score = math.floor( item.Score )
 		local rank, color = BoonAdvisor.RankFor( score )
 		local badge = rank .. "  " .. score
 		if index == bestIndex then
 			badge = "* " .. badge
+			if config.ShowBestMargin and margin ~= nil then
+				badge = badge .. "  +" .. tostring( margin )
+			end
 			color = config.BestPickColor
 		end
+		local showReason = config.Shop.ShowReason and BoonAdvisor.ShouldShowReason()
+			and item.Reason ~= nil
+		local colorKey = table.concat({ color[1] or 0, color[2] or 0,
+			color[3] or 0, color[4] or 0 }, "," )
+		local drawKey = table.concat({ badge, showReason and item.Reason or "",
+			colorKey, tostring( item.ObjectId ) }, "|" )
+		if item.OverlayAnchorId == nil or item.OverlayDrawKey ~= drawKey then
+			local anchorId = item.OverlayAnchorId
+			if anchorId ~= nil and DestroyTextBox ~= nil then
+				DestroyTextBox({ Id = anchorId })
+			else
+				BoonAdvisor.ClearWorldTextAnchor(
+					item, "OverlayAnchorId", "OwnsOverlayAnchor" )
+				local ownsAnchor
+				anchorId, ownsAnchor = BoonAdvisor.CreateWorldTextAnchor( item.ObjectId )
+				item.OverlayAnchorId = anchorId
+				item.OwnsOverlayAnchor = ownsAnchor
+			end
+			item.OverlayDrawKey = drawKey
 
-		CreateTextBox({
-			Id = anchorId,
+			CreateTextBox({
+				Id = anchorId,
 			Text = "{$TempTextData.BALine}",
 			LuaKey = "TempTextData",
 			LuaValue = { BALine = badge },
@@ -1144,11 +1205,11 @@ function BoonAdvisor.DrawShopOverlay()
 			Width = layout.TextWidth,
 			ShadowBlur = 0, ShadowColor = { 0, 0, 0, 1 }, ShadowOffset = { 0, 2 },
 			OutlineThickness = 2, OutlineColor = { 0, 0, 0, 1 },
-		})
+			})
 
-		if config.Shop.ShowReason and BoonAdvisor.ShouldShowReason() and item.Reason ~= nil then
-			CreateTextBox({
-				Id = anchorId,
+			if showReason then
+				CreateTextBox({
+					Id = anchorId,
 				Text = "{$TempTextData.BALine}",
 				LuaKey = "TempTextData",
 				LuaValue = { BALine = item.Reason },
@@ -1160,7 +1221,8 @@ function BoonAdvisor.DrawShopOverlay()
 				Width = layout.TextWidth,
 				ShadowBlur = 0, ShadowColor = { 0, 0, 0, 1 }, ShadowOffset = { 0, 2 },
 				OutlineThickness = 2, OutlineColor = { 0, 0, 0, 1 },
-			})
+				})
+			end
 		end
 	end
 
@@ -1431,8 +1493,56 @@ function BoonAdvisor.CollectDoorEvaluations( refreshArgs )
 		BoonAdvisor.LastDoorEvaluations = evaluations
 		BoonAdvisor.LastBestDoorObjectId = bestId
 		BoonAdvisor.LastDoorEvaluationRoom = startRoom
+		BoonAdvisor.LastDoorMargin = BoonAdvisor.DoorMargin( evaluations, bestId )
+		BoonAdvisor.LastDoorRerollAdvised = BoonAdvisor.DoorRerollAdvised( evaluations )
 	end
 	return evaluations, bestId, fresh
+end
+
+-- How far the starred door is ahead of the runner-up, before the soft knee.
+function BoonAdvisor.DoorMargin( evaluations, bestId )
+	if bestId == nil or evaluations == nil or evaluations[bestId] == nil then
+		return nil
+	end
+	local best = evaluations[bestId].RawScore
+	local second = nil
+	for doorId, evaluation in pairs( evaluations ) do
+		if doorId ~= bestId and evaluation.BlockReason == nil then
+			if second == nil or evaluation.RawScore > second then
+				second = evaluation.RawScore
+			end
+		end
+	end
+	if second == nil then return nil end
+	return math.floor( best - second + 0.5 )
+end
+
+--[[
+	Fated Authority. RoomManager marks a door CanBeRerolled when the Mirror
+	row is selected and the door allows it; AttemptRerollDoor then replaces
+	that one door's reward. Advise it only when the whole offer is poor: a
+	die is left, some exit can be rerolled, and no enterable exit reaches the
+	biome's usual door value.
+]]
+function BoonAdvisor.DoorRerollAdvised( evaluations )
+	local advice = BoonAdvisor.Config.Doors.RerollAdvice
+	if advice == nil or not advice.Enabled then return false end
+	if CurrentRun == nil or ( CurrentRun.NumRerolls or 0 ) <= 0 then return false end
+	local biome = BoonAdvisor.CurrentBiome ~= nil and BoonAdvisor.CurrentBiome() or nil
+	local threshold = ( biome ~= nil and advice[biome] ) or advice.Default or 0
+	local rerollable = false
+	local enterable = false
+	for doorId, evaluation in pairs( evaluations or {} ) do
+		local exitDoor = ( BoonAdvisor.DoorCandidates or {} )[doorId]
+		if exitDoor ~= nil and exitDoor.CanBeRerolled then rerollable = true end
+		if evaluation.BlockReason == nil then
+			enterable = true
+			if math.floor( BoonAdvisor.Finalize( evaluation.RawScore ) ) >= threshold then
+				return false
+			end
+		end
+	end
+	return rerollable and enterable
 end
 
 function BoonAdvisor.BestDoorObjectId()
@@ -1448,6 +1558,7 @@ end
 function BoonAdvisor.ClearDoorOverlay( exitDoor )
 	BoonAdvisor.ClearWorldTextAnchor( exitDoor, "BoonAdvisorAnchorId", "BoonAdvisorOwnsAnchor" )
 	exitDoor.BoonAdvisorDrawn = nil
+	exitDoor.BoonAdvisorDrawKey = nil
 end
 
 function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
@@ -1459,8 +1570,8 @@ function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
 		return
 	end
 	BoonAdvisor.RegisterDoor( exitDoor )
-	BoonAdvisor.ClearDoorOverlay( exitDoor )
 	if not BoonAdvisor.IsDoorAdvisorVisible( exitDoor ) then
+		BoonAdvisor.ClearDoorOverlay( exitDoor )
 		return
 	end
 
@@ -1476,6 +1587,7 @@ function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
 		offsetShift = config.Doors.Layout.NoIconOffsetY
 	end
 	if ownerId == nil then
+		BoonAdvisor.ClearDoorOverlay( exitDoor )
 		return
 	end
 
@@ -1491,6 +1603,7 @@ function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
 		end
 	end
 	if evaluation == nil then
+		BoonAdvisor.ClearDoorOverlay( exitDoor )
 		return
 	end
 	local score = evaluation.RawScore
@@ -1505,13 +1618,40 @@ function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
 	end
 	if exitDoor.ObjectId ~= nil and exitDoor.ObjectId == bestDoorId then
 		badge = "* " .. badge
+		local room = CurrentRun ~= nil and CurrentRun.CurrentRoom or nil
+		if BoonAdvisor.LastDoorEvaluationRoom == room then
+			if config.ShowBestMargin and BoonAdvisor.LastDoorMargin ~= nil then
+				badge = badge .. "  +" .. tostring( BoonAdvisor.LastDoorMargin )
+			end
+			if BoonAdvisor.LastDoorRerollAdvised then
+				badge = badge .. "  reroll?"
+			end
+		end
 		color = config.BestPickColor
 	end
 
 	local layout = config.Doors.Layout
-	local anchorId, ownsAnchor = BoonAdvisor.CreateWorldTextAnchor( ownerId )
-	exitDoor.BoonAdvisorAnchorId = anchorId
-	exitDoor.BoonAdvisorOwnsAnchor = ownsAnchor
+	local showReason = config.Doors.ShowReason and BoonAdvisor.ShouldShowReason()
+		and reason ~= nil
+	local colorKey = table.concat({ color[1] or 0, color[2] or 0,
+		color[3] or 0, color[4] or 0 }, "," )
+	local drawKey = table.concat({ badge, showReason and reason or "", colorKey,
+		tostring( ownerId ), tostring( offsetShift ) }, "|" )
+	if exitDoor.BoonAdvisorAnchorId ~= nil
+		and exitDoor.BoonAdvisorDrawKey == drawKey then
+		return
+	end
+	local anchorId = exitDoor.BoonAdvisorAnchorId
+	if anchorId ~= nil and DestroyTextBox ~= nil then
+		DestroyTextBox({ Id = anchorId })
+	else
+		BoonAdvisor.ClearDoorOverlay( exitDoor )
+		local ownsAnchor
+		anchorId, ownsAnchor = BoonAdvisor.CreateWorldTextAnchor( ownerId )
+		exitDoor.BoonAdvisorAnchorId = anchorId
+		exitDoor.BoonAdvisorOwnsAnchor = ownsAnchor
+	end
+	exitDoor.BoonAdvisorDrawKey = drawKey
 	CreateTextBox({
 		Id = anchorId,
 		Text = "{$TempTextData.BALine}",
@@ -1527,7 +1667,7 @@ function BoonAdvisor.DrawDoorOverlay( exitDoor, bestDoorId, evaluation )
 		OutlineThickness = 2, OutlineColor = { 0, 0, 0, 1 },
 	})
 
-	if config.Doors.ShowReason and BoonAdvisor.ShouldShowReason() and reason ~= nil then
+	if showReason then
 		CreateTextBox({
 			Id = anchorId,
 			Text = "{$TempTextData.BALine}",
@@ -1572,24 +1712,29 @@ function BoonAdvisor.RefreshDoorOverlays( refreshArgs )
 end
 
 function BoonAdvisor.FinishQueuedDoorRefresh( args )
-	wait( BoonAdvisor.Config.Doors.RefreshDelay or 0.20 )
-	if args == nil or BoonAdvisor.DoorRefreshQueuedRoom ~= args.Room then return end
-	if CurrentRun == nil or CurrentRun.CurrentRoom ~= args.Room then
-		BoonAdvisor.DoorRefreshQueuedRoom = nil
-		return
+	if args == nil then return end
+	local delay = BoonAdvisor.Config.Doors.RefreshDelay or 0.20
+	while BoonAdvisor.DoorRefreshQueuedRoom == args.Room do
+		local generation
+		repeat
+			generation = BoonAdvisor.DoorRefreshGeneration or 0
+			wait( delay )
+			if BoonAdvisor.DoorRefreshQueuedRoom ~= args.Room then return end
+			if CurrentRun == nil or CurrentRun.CurrentRoom ~= args.Room then
+				BoonAdvisor.DoorRefreshQueuedRoom = nil
+				return
+			end
+		until generation == ( BoonAdvisor.DoorRefreshGeneration or 0 )
+		BoonAdvisor.RefreshDoorOverlays({
+			YieldWithinForecasts = true,
+			YieldBetweenDoors = true,
+			YieldDuration = 0.01,
+		})
+		if generation == ( BoonAdvisor.DoorRefreshGeneration or 0 ) then
+			BoonAdvisor.DoorRefreshQueuedRoom = nil
+			return
+		end
 	end
-	local generation = BoonAdvisor.DoorRefreshGeneration or 0
-	BoonAdvisor.RefreshDoorOverlays({
-		YieldWithinForecasts = true,
-		YieldBetweenDoors = true,
-		YieldDuration = 0.01,
-	})
-	if BoonAdvisor.DoorRefreshQueuedRoom ~= args.Room then return end
-	if generation ~= ( BoonAdvisor.DoorRefreshGeneration or 0 ) then
-		thread( BoonAdvisor.SafeFinishQueuedDoorRefresh, { Room = args.Room } )
-		return
-	end
-	BoonAdvisor.DoorRefreshQueuedRoom = nil
 end
 
 function BoonAdvisor.QueueDoorOverlayRefresh()

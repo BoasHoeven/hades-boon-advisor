@@ -214,22 +214,60 @@ function BoonAdvisor.LogContext( run )
 		.. " rerolls=" .. tostring( run.NumRerolls or 0 )
 end
 
-function BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEvaluation )
+-- What kind of screen a loot table opens, for the pick log.
+function BoonAdvisor.OfferKind( lootData )
+	local name = lootData ~= nil and lootData.Name or nil
+	if name == "StackUpgrade" then return "pom" end
+	if name == "WeaponUpgrade" then return "hammer" end
+	if name == "TrialUpgrade" then return "chaos" end
+	return "boon"
+end
+
+-- Quote a free-text field so the analyzer can read past its spaces.
+function BoonAdvisor.LogQuote( text )
+	return '"' .. tostring( text or "" ):gsub( '"', "'" ) .. '"'
+end
+
+local function formatRaw( value )
+	if type( value ) ~= "number" then return "?" end
+	return tostring( math.floor( value * 10 + 0.5 ) / 10 )
+end
+
+function BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEvaluation, extra )
+	extra = extra or {}
+	local lootName = lootData ~= nil and lootData.Name or "?"
+	local bestResult = results[bestIndex]
+	local scores = {}
+	local unclamped = {}
+	for index, result in ipairs( results ) do
+		local itemData = options[index]
+		if itemData ~= nil and itemData.ItemName ~= nil then
+			scores[itemData.ItemName] = result.RawScore
+			unclamped[itemData.ItemName] = result.Unclamped or result.RawScore
+		end
+	end
+	-- The choice hook needs this even when logging is off: the margin and
+	-- the recommendation are what make a [took] line stand alone.
+	BoonAdvisor.LastOfferLog = {
+		LootName = lootName,
+		Kind = BoonAdvisor.OfferKind( lootData ),
+		RecommendedName = options[bestIndex] ~= nil and options[bestIndex].ItemName or nil,
+		BestScore = bestResult ~= nil and bestResult.RawScore or 0,
+		BestReason = bestResult ~= nil and bestResult.Reason or nil,
+		SecondScore = extra.SecondScore,
+		Margin = extra.Margin,
+		Verdict = extra.Verdict,
+		Scores = scores,
+		Unclamped = unclamped,
+		RerollSuggested = rerollEvaluation ~= nil and rerollEvaluation.Suggested or false,
+		RerollEvaluation = rerollEvaluation,
+	}
 	if not BoonAdvisor.Config.LogPicks then
 		return
 	end
-	local lootName = lootData ~= nil and lootData.Name or "?"
-	local bestResult = results[bestIndex]
 	rerollEvaluation = rerollEvaluation or ( bestResult ~= nil
 		and BoonAdvisor.EvaluateReroll( lootData, bestResult.RawScore ) )
 		or { Suggested = false, Available = false }
-	BoonAdvisor.LastOfferLog = {
-		LootName = lootName,
-		RecommendedName = options[bestIndex] ~= nil and options[bestIndex].ItemName or nil,
-		BestScore = bestResult ~= nil and bestResult.RawScore or 0,
-		RerollSuggested = rerollEvaluation.Suggested,
-		RerollEvaluation = rerollEvaluation,
-	}
 	local parts = {}
 	for index, result in ipairs( results ) do
 		local itemData = options[index]
@@ -237,8 +275,15 @@ function BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEval
 		if index == bestIndex then
 			marker = "*"
 		end
-		table.insert( parts, marker .. BoonAdvisor.TraitDisplayName( itemData.ItemName )
-			.. "=" .. math.floor( result.Score ) .. "(" .. result.Rank .. ")" )
+		local text = marker .. tostring( itemData.ItemName )
+			.. "=" .. math.floor( result.Score ) .. "(" .. result.Rank .. ")"
+		if itemData.SecondaryItemName ~= nil then
+			text = text .. "/" .. tostring( itemData.SecondaryItemName )
+		end
+		local terms = BoonAdvisor.FormatTerms ~= nil
+			and BoonAdvisor.FormatTerms( result.Terms ) or ""
+		if terms ~= "" then text = text .. " " .. terms end
+		table.insert( parts, text )
 	end
 	local rerollText = "reroll=unavailable"
 	if rerollEvaluation.Available then
@@ -249,9 +294,16 @@ function BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEval
 				rerollEvaluation.ImprovementChance * 100 + 0.5 ) ) .. "%"
 			.. " cost=" .. tostring( rerollEvaluation.Cost )
 	end
+	local summary = "kind=" .. BoonAdvisor.LastOfferLog.Kind
+		.. " margin=" .. tostring( extra.Margin or 0 )
+		.. " reason=" .. BoonAdvisor.LogQuote( BoonAdvisor.LastOfferLog.BestReason )
+	if extra.Verdict ~= nil then
+		summary = summary .. " verdict=" .. tostring( extra.Verdict )
+	end
 	BoonAdvisor.LogLine( "[offer] " .. BoonAdvisor.LogContext()
 		.. " loot=" .. tostring( lootName )
 		.. " | " .. table.concat( parts, " | " )
+		.. " | " .. summary
 		.. " | " .. rerollText
 		.. " | build=" .. ( BoonAdvisor.BuildSnapshot ~= nil
 			and BoonAdvisor.BuildSnapshot() or "unavailable" ) )
@@ -263,11 +315,29 @@ function BoonAdvisor.LogChoice( screen, button )
 	end
 	local data = button ~= nil and button.Data or nil
 	local chosen = data ~= nil and data.Name or "?"
-	local recommended = BoonAdvisor.LastOfferLog ~= nil
-		and BoonAdvisor.LastOfferLog.RecommendedName or nil
-	BoonAdvisor.LogLine( "[took ] " .. BoonAdvisor.TraitDisplayName( chosen )
-		.. " recommended=" .. BoonAdvisor.TraitDisplayName( recommended or "?" )
-		.. " followed=" .. tostring( chosen == recommended ) )
+	local offer = BoonAdvisor.LastOfferLog or {}
+	local recommended = offer.RecommendedName
+	local takenScore = offer.Scores ~= nil and offer.Scores[chosen] or nil
+	local bestScore = offer.BestScore
+	-- score= and best= are what the player saw; margin= is the model's own
+	-- pre-knee gap, which is what makes an overrule evidence or noise.
+	local margin = nil
+	if offer.Unclamped ~= nil and recommended ~= nil
+		and offer.Unclamped[chosen] ~= nil and offer.Unclamped[recommended] ~= nil then
+		margin = offer.Unclamped[recommended] - offer.Unclamped[chosen]
+	elseif takenScore ~= nil and bestScore ~= nil then
+		margin = bestScore - takenScore
+	end
+	BoonAdvisor.LogLine( "[took ] " .. BoonAdvisor.LogContext()
+		.. " kind=" .. tostring( offer.Kind or "boon" )
+		.. " loot=" .. tostring( offer.LootName or "?" )
+		.. " taken=" .. tostring( chosen )
+		.. " score=" .. formatRaw( takenScore )
+		.. " recommended=" .. tostring( recommended or "?" )
+		.. " best=" .. formatRaw( bestScore )
+		.. " margin=" .. formatRaw( margin )
+		.. " followed=" .. tostring( chosen == recommended )
+		.. " reason=" .. BoonAdvisor.LogQuote( offer.BestReason ) )
 end
 
 -- Dynamic strings go through the engine's substitution path; a raw Lua string
@@ -300,10 +370,16 @@ function BoonAdvisor.DrawLine( buttonId, text, color, fontSize, offsetX, offsetY
 	})
 end
 
-local function boonBadgeText( result, isBest, rerollEvaluation )
+-- "* S  95  +14  reroll?": the star, the grade, how far ahead it is, and the
+-- optional reroll suffix. The deferred reroll pass redraws the whole line
+-- through this same function, so the suffix never replaces the margin.
+local function boonBadgeText( result, isBest, rerollEvaluation, margin )
 	local text = result.Rank .. "  " .. result.Score
 	if isBest then
 		text = "* " .. text
+		if margin ~= nil and BoonAdvisor.Config.ShowBestMargin then
+			text = text .. "  +" .. tostring( margin )
+		end
 		if rerollEvaluation ~= nil and rerollEvaluation.Suggested then
 			text = text .. "  reroll?"
 		end
@@ -312,7 +388,7 @@ local function boonBadgeText( result, isBest, rerollEvaluation )
 end
 
 function BoonAdvisor.DrawBoonBadge( components, index, button, option, result,
-	isBest, rerollEvaluation, useReplaceableAnchor )
+	isBest, rerollEvaluation, useReplaceableAnchor, margin )
 	local layout = BoonAdvisor.Config.Layout
 	local badgeColor = isBest and BoonAdvisor.Config.BestPickColor or result.Color
 	local rarityKey = option.Rarity
@@ -348,7 +424,7 @@ function BoonAdvisor.DrawBoonBadge( components, index, button, option, result,
 	end
 
 	BoonAdvisor.DrawLine( textId,
-		boonBadgeText( result, isBest, rerollEvaluation ), badgeColor,
+		boonBadgeText( result, isBest, rerollEvaluation, margin ), badgeColor,
 		layout.BadgeFontSize, offsetX, offsetY,
 		"AlegreyaSansSCBold", layout.BadgeTextWidth )
 end
@@ -392,10 +468,14 @@ function BoonAdvisor.FinishDeferredBoonReroll( args )
 		BoonAdvisor.WritePerfSession( perfSession )
 		return
 	end
+	if BoonAdvisor.LastOfferLog ~= nil then
+		BoonAdvisor.LastOfferLog.RerollSuggested = evaluation.Suggested
+		BoonAdvisor.LastOfferLog.RerollEvaluation = evaluation
+	end
 	if evaluation.Suggested then
 		phaseStart = BoonAdvisor.PerfStart( perfSession )
 		BoonAdvisor.DrawBoonBadge( args.Components, args.Index, args.Button,
-			args.Option, args.Result, true, evaluation, true )
+			args.Option, args.Result, true, evaluation, true, args.Margin )
 		BoonAdvisor.PerfLap( perfSession, "suffix_draw", phaseStart )
 	end
 	BoonAdvisor.ActivePerfSession = nil
@@ -410,6 +490,24 @@ function BoonAdvisor.SafeFinishDeferredBoonReroll( args )
 	BoonAdvisor.SafeCall( BoonAdvisor.FinishDeferredBoonReroll, args )
 	BoonAdvisor.ActivePerfSession = nil
 	BoonAdvisor.ActivePerfStage = nil
+end
+
+--[[
+	"None of these." A boon screen can be declined: close it and leave the
+	boon on the floor. That is the right call when the run already holds
+	boons from GodPoolSoftCap gods, this god is new, and nothing on screen
+	is worth diluting the duo paths for. Returns "skip" or nil.
+]]
+function BoonAdvisor.OfferVerdict( lootData, bestResult )
+	local config = BoonAdvisor.Config
+	if bestResult == nil or lootData == nil or lootData.Name == nil then return nil end
+	if BoonAdvisor.OfferKind( lootData ) ~= "boon" then return nil end
+	if BoonAdvisor.GodPoolPenalty == nil then return nil end
+	local _, atCap = BoonAdvisor.GodPoolPenalty( lootData.Name )
+	if atCap and bestResult.Score < ( config.WeakPickThreshold or 0 ) then
+		return "skip"
+	end
+	return nil
 end
 
 function BoonAdvisor.DrawOverlay( lootData, perfSession )
@@ -436,6 +534,7 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 	-- Score every option first so the best one can be highlighted.
 	local results = {}
 	local bestIndex = nil
+	local secondIndex = nil
 	local phaseStart = BoonAdvisor.PerfStart( perfSession )
 	for index, itemData in ipairs( options ) do
 		local result = BoonAdvisor.ScoreOption( itemData, lootData )
@@ -443,7 +542,10 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 		-- Compare the unrounded score: two options can both display 88.
 		if not itemData.Blocked then
 			if bestIndex == nil or result.RawScore > results[bestIndex].RawScore then
+				secondIndex = bestIndex
 				bestIndex = index
+			elseif secondIndex == nil or result.RawScore > results[secondIndex].RawScore then
+				secondIndex = index
 			end
 		end
 		if config.Debug and DebugPrint ~= nil then
@@ -452,6 +554,19 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 		end
 	end
 	BoonAdvisor.PerfLap( perfSession, "score_options", phaseStart )
+
+	-- How far the star is ahead, before the soft knee compresses the top end:
+	-- "+1" is a coin flip the player may overrule freely, "+14" is not.
+	local margin = nil
+	if bestIndex ~= nil and secondIndex ~= nil then
+		margin = math.floor( ( results[bestIndex].Unclamped or results[bestIndex].RawScore )
+			- ( results[secondIndex].Unclamped or results[secondIndex].RawScore ) + 0.5 )
+	end
+	local verdict = bestIndex ~= nil
+		and BoonAdvisor.OfferVerdict( lootData, results[bestIndex] ) or nil
+	if verdict == "skip" then
+		results[bestIndex].Reason = "none of these: weak, and a new god for a full pool"
+	end
 
 	-- A full god reroll forecast is exact but can take a frame in the game's Lua
 	-- runtime. Draw the grades immediately and spread its three exclusion cases
@@ -476,7 +591,11 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 		BoonAdvisor.PerfLap( perfSession, "reroll_sync", phaseStart )
 	end
 	phaseStart = BoonAdvisor.PerfStart( perfSession )
-	BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEvaluation )
+	BoonAdvisor.LogOffer( lootData, options, results, bestIndex, rerollEvaluation, {
+		Margin = margin,
+		SecondScore = secondIndex ~= nil and results[secondIndex].RawScore or nil,
+		Verdict = verdict,
+	} )
 	BoonAdvisor.PerfLap( perfSession, "offer_log", phaseStart )
 
 	local layout = config.Layout
@@ -487,7 +606,8 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 			phaseStart = BoonAdvisor.PerfStart( perfSession )
 			BoonAdvisor.DrawBoonBadge( components, index, button, option, result,
 				index == bestIndex, rerollEvaluation,
-				deferReroll and index == bestIndex )
+				deferReroll and index == bestIndex,
+				index == bestIndex and margin or nil )
 			BoonAdvisor.PerfLap( perfSession, "badge_" .. tostring( index ), phaseStart )
 
 			if config.ShowReason and BoonAdvisor.ShouldShowReason() and result.Reason ~= nil then
@@ -519,6 +639,7 @@ function BoonAdvisor.DrawOverlay( lootData, perfSession )
 			Option = options[bestIndex],
 			Result = results[bestIndex],
 			LootData = lootData,
+			Margin = margin,
 		} )
 		BoonAdvisor.PerfLap( perfSession, "schedule_reroll", phaseStart )
 	end

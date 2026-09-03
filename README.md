@@ -13,8 +13,13 @@ The `*` marks the recommended available option.
 
 ## Features
 
-- Advises on boons, Daedalus Hammers, Poms, Chaos, doors, Charon's shop,
-  keepsakes, story-room rewards, and the Pool of Purging.
+- Advises on boons, Daedalus Hammers, Poms, Chaos, doors, Charon's shop, the
+  Well of Charon, keepsakes, story-room rewards, and the Pool of Purging.
+- Shows how far the starred option is ahead (`* S 95 +14`), so a coin flip
+  reads differently from a landslide, and says when a weak screen from a new
+  god is worth walking away from.
+- Suggests a Fated Persuasion reroll on the boon screen and a Fated Authority
+  reroll when every exit on offer is poor.
 - Ranks the choices offered by Sisyphus, Eurydice, and Patroclus using the
   current run state.
 - Reads the active weapon aspect, held boons, Mirror talents, biome, health,
@@ -81,9 +86,11 @@ place, so a game updated since installation keeps its updated script.
 
 ## Configuration
 
-General settings, weights, colours, text placement, and logging are in
-[`mod/BA_Config.lua`](mod/BA_Config.lua). Baseline ratings and build archetypes
-are in [`mod/BA_Ratings.lua`](mod/BA_Ratings.lua).
+The three settings most players change sit at the top of
+[`mod/BA_Config.lua`](mod/BA_Config.lua): `Objective`, `ShowReason`, and
+`LogPicks`. Everything below the "you probably do not need to touch it" line
+is tuning: weights, colours, text placement, door and shop tables. Baseline
+ratings and build archetypes are in [`mod/BA_Ratings.lua`](mod/BA_Ratings.lua).
 
 Reroll advice compares the best current option with the exact expected value
 of the legal replacement pool. `RerollMinExpectedGain`,
@@ -110,32 +117,48 @@ The prerequisite and eligibility logic is derived from game data. Baseline
 ratings and archetypes are hand-tuned. Boon-screen advice is the most mature;
 door, shop, and keepsake scoring should be treated as experimental.
 
-Optional pick logging records offers, scores, recommendations, and the option
-taken. It also records run outcomes and clear times. It does not record combat
-damage, and run results are evidence for tuning rather than proof of causation.
+Optional pick logging records every offer with its score breakdown, the
+option taken and the margin by which the star was ahead, one line per room
+with clear time and damage taken, and a run summary. Run results are evidence
+for tuning rather than proof of causation.
 
 ## Local run telemetry
 
 Set `LogPicks = true` in `mod/BA_Config.lua`, then re-run the installer. The mod
-will append decisions and run summaries to `BoonAdvisor-runs.log` beside the
-Hades save files on Windows, or in the home directory on Linux/macOS (see
-`LogFilePath` in `mod/BA_Config.lua`). The log stays local and is not part of the game save. Leave
-logging disabled for normal play and enable it only while collecting diagnostics.
+will append decisions, room outcomes and run summaries to
+`BoonAdvisor-runs.log` beside the Hades save files on Windows, or in the home
+directory on Linux/macOS (see `LogFilePath` in `mod/BA_Config.lua`). The log
+stays local and is not part of the game save. Leave logging disabled for
+normal play and enable it only while collecting diagnostics.
+
+Trait names are the game's internal names so lines can be joined regardless
+of language. `score=` and `best=` are what the screen showed; `margin=` is the
+model's own gap before the display scale compresses the top end, which is
+what makes an overrule evidence (`+14`) or noise (`+1`).
 
 ```text
-[offer] weapon=BowWeapon aspect=BowMarkHomingTrait biome=Tartarus depth=8 heat=0 hp=85/100 dd=2 loot=DionysusUpgrade | *Drunken Flourish=96(S) | Strong Drink=72(B)
-[took ] Drunken Flourish recommended=Drunken Flourish followed=true
+=== BoonAdvisor v1.14.0 objective=Balanced ratings=7f3a9c21 channel=queued saveignores=true ===
+[offer] run=12 objective=Balanced weapon=BowWeapon aspect=BowMarkHomingTrait biome=Tartarus depth=8 heat=0 hp=85/100 dd=2 gold=140 rerolls=1 loot=DionysusUpgrade | *DionysusSecondaryTrait=96(S) base=68 slot=8 hit=8 aspectTrait=5 archetype=18 | FountainDamageBonusTrait=72(B) base=76 depth=6 | kind=boon margin=31 reason="core of the Chiron Hangover build" | reroll=no expected=91 gain=-5 chance=12% cost=1 | build=AphroditeWeaponTrait@Rare
+[took ] run=12 ... kind=boon loot=DionysusUpgrade taken=DionysusSecondaryTrait score=96.3 recommended=DionysusSecondaryTrait best=96.3 margin=0 followed=true reason="core of the Chiron Hangover build"
+[room ] run=12 ... room=A_Combat05 encounter=GeneratedA type=Default clear=31.4 damage_taken=19 hit=true timer=- next=ZeusUpgrade
+[door ] run=12 ... took=ZeusUpgrade margin=0 followed=true reroll=false | >*ZeusUpgrade=78 | Money=52 | build=...
+[run-end] run=12 ... result=death time=1310 room=C_Boss01 killer=Theseus damage_taken=412 | build=...
 ```
 
 Analyze the current save history and local telemetry without modifying the
-save:
+save (or only the log, with `--telemetry-only`):
 
 ```bash
 python tools/analyze_runs.py
 ```
 
-The report compares aspect results, documented build-route completion, and
-recommendation follow rates when telemetry is available.
+The report is per decision rather than per run: every overrule sorted by
+margin with the clear time and damage of the next three rooms relative to
+that run's median, which star reasons and score terms show up mostly in
+overruled picks, the follow rate per advisor (boon, door, shop, Well, purge,
+keepsake, story), and the rooms with a damage spike together with the three
+decisions before them. Clear-rate comparisons are printed only once a bucket
+holds ten runs; with fewer, read the per-decision tables instead.
 
 ## Tests
 

@@ -12,42 +12,25 @@ end
 
 BoonAdvisor.Config =
 {
-	-- Master switch. Set false to leave the pick screen untouched.
-	Enabled = true,
+	-----------------------------------------------------------------------
+	-- The three settings most players might want to change.
+	-----------------------------------------------------------------------
 
-	-- Show the one-line "why" under the rank badge.
+	-- What "best" means for this run. "Balanced" is the all-purpose default.
+	-- "Speed" favours proven fast routes and combat-free rooms; "HighHeat"
+	-- values safety more heavily. Unknown values fall back to Balanced.
+	Objective = "Balanced",
+
+	-- Show the one-line "why" under each rank badge.
 	ShowReason = true,
-
-	-- Suggest rerolling only when the exact legal offer distribution predicts a
-	-- worthwhile improvement often enough to justify the cost.
-	SuggestReroll = true,
-	-- Live recommendations use deterministic probability math. These larger
-	-- budgets are retained only for the offline differential-test oracle.
-	RerollSimulationSamples = 512,
-	-- Deferred exact forecasts yield after this many memoized states.
-	RerollForecastWorkPerFrame = 256,
-	DoorOfferSimulationSamples = 512,
-	AllowLiveSimulationFallback = false,
-	ForecastCacheEntries = 96,
-	RerollMinExpectedGain = 6,
-	RerollMinImprovementChance = 0.50,
-	RerollMeaningfulImprovement = 1,
-	RerollCostPenalty = 4,
-	RerollLastDiePenalty = 2,
-
-	-- Print scoring breakdowns to the debug console.
-	Debug = false,
-
-	-- Temporary local diagnostics. When enabled, one compact timing line per
-	-- boon-menu phase is appended to the platform log path. Disabled for releases.
-	PerformanceMonitor = false,
-	PerformanceLogFilePath = nil,
 
 	--[[
 		Pick logging, for validating the advice against real runs.
 
 		When on, the mod records recommendations, actual choices, rerolls, doors,
-		shops, story-room choices, and a summary when each run ends.
+		shops, Well and purge sales, story-room choices, one line per room
+		cleared, and a summary when each run ends. tools/analyze_runs.py turns
+		the file into a per-decision report.
 
 		Lines are written to a file beside your saves:
 
@@ -66,13 +49,46 @@ BoonAdvisor.Config =
 	]]
 	LogPicks = false,
 	LogFilePath = nil,
-	-- Batch nearby events and write them after the active UI frame.
+
+	-----------------------------------------------------------------------
+	-- Everything below is tuning. You probably do not need to touch it.
+	-----------------------------------------------------------------------
+
+	-- Master switch. Set false to leave every screen untouched.
+	Enabled = true,
+
+	-- Print "+N" after the starred badge: the raw margin over the runner-up,
+	-- so a coin flip (+1) reads differently from a landslide (+14).
+	ShowBestMargin = true,
+
+	-- Suggest rerolling only when the exact legal offer distribution predicts a
+	-- worthwhile improvement often enough to justify the cost.
+	SuggestReroll = true,
+	-- Deferred exact forecasts yield after this many memoized states.
+	RerollForecastWorkPerFrame = 256,
+	ForecastCacheEntries = 96,
+	RerollMinExpectedGain = 6,
+	RerollMinImprovementChance = 0.50,
+	RerollMeaningfulImprovement = 1,
+	RerollCostPenalty = 4,
+	RerollLastDiePenalty = 2,
+
+	-- "None of these": when the run already holds boons from GodPoolSoftCap
+	-- gods, this god is new, and the best boon on screen finalizes below this
+	-- score, the star's reason says that walking away is fine.
+	WeakPickThreshold = 60,
+
+	-- Print scoring breakdowns to the debug console.
+	Debug = false,
+
+	-- Temporary local diagnostics. When enabled, one compact timing line per
+	-- boon-menu phase is appended to the platform log path. Disabled for releases.
+	PerformanceMonitor = false,
+	PerformanceLogFilePath = nil,
+
+	-- Batch nearby telemetry events and write them after the active UI frame.
 	LogFlushDelay = 0.03,
 
-	-- Choose what "best" means for this run. Balanced preserves the normal
-	-- all-purpose advice. Speed favours proven fast routes and free rooms;
-	-- HighHeat values safety more heavily. Unknown values fall back to Balanced.
-	Objective = "Balanced",
 	ObjectiveProfiles =
 	{
 		Balanced =
@@ -271,12 +287,20 @@ BoonAdvisor.Config =
 
 		-- Taking this was the last prerequisite for a duo boon.
 		DuoComplete = 22,
-		-- Intrinsic Duo value scales the completion/progress term. A weak utility
-		-- Duo still gets some credit, but no longer receives Merciful End's bonus.
-		DuoValueNeutral = 60,
-		DuoValueRange = 30,
-		DuoValueMinScale = 0.15,
+		--[[
+			Intrinsic Duo value scales the completion/progress term:
+			scale = 0.5 + (rating - Neutral) / Range, clamped below. With the
+			old 60/30 a 70-rated utility duo such as Lightning Rod still kept
+			0.83 of the +22; at 76/20 it keeps 0.2, while Merciful End (94)
+			and Sea Storm (92) still pin to the maximum.
+		]]
+		DuoValueNeutral = 76,
+		DuoValueRange = 20,
+		DuoValueMinScale = 0.25,
 		DuoValueMaxScale = 1.20,
+		-- A duo or legendary actually on screen is a one-time offer; a core
+		-- boon comes back next god room. Flat credit for the scarcity.
+		GatedOfferBonus = 12,
 		-- Taking this satisfies one more prerequisite set of a duo.
 		DuoProgress = 6,
 		--[[
@@ -332,12 +356,20 @@ BoonAdvisor.Config =
 		-- appear, so chasing one is a better bet.
 		DuoRarityPerLevel = 0.03,
 
-		-- A temporary rarity boost is active, so boons roll better right now.
-		RarityBoostBonus = 6,
-
 		-- Steering toward a known strong build (see Ratings.Archetypes).
 		ArchetypeCore = 12,
 		ArchetypePayoff = 20,
+		-- An aspect-gated route pays only this fraction of its core bonus
+		-- until the run holds one of its core boons. The first pick is still
+		-- steered, but a route the run walked past cannot outvote the one it
+		-- is actually building (Chiron: Hangover versus Merciful End).
+		ArchetypeUncommittedScale = 0.6,
+
+		-- Boss preparation: within this many encounters of the biome boss,
+		-- survival-tagged boons and survival Chaos blessings gain up to this
+		-- much, growing as the boss gets closer.
+		BossPrepProximity = 3,
+		BossPrepSurvivalBonus = 6,
 
 		--[[
 			Mirror-aware bonuses. Reaching a 2nd distinct status curse switches
@@ -444,6 +476,41 @@ BoonAdvisor.Config =
 		-- boon at a discounted rate. 0.42 preserves the old neutral value:
 		-- 66 + (66 * 0.42) is approximately the 94-point fallback above.
 		DevotionSecondBoonWeight = 0.42,
+		--[[
+			The god you refuse arms the enemies for that fight
+			(AddEnemyUpgrade in StartDevotionTest). Ares' blade rifts and Zeus'
+			chain lightning hurt far more than Athena's deflect, so the Trial
+			pays a cost for the god the advisor expects you to spurn -- the
+			lower-scored of the two. Scaled by Pact risk like DevotionRisk.
+		]]
+		TrialSpurnedRisk =
+		{
+			AresUpgrade      = 6,
+			ZeusUpgrade      = 5,
+			DemeterUpgrade   = 5,
+			DionysusUpgrade  = 4,
+			ArtemisUpgrade   = 4,
+			PoseidonUpgrade  = 3,
+			AphroditeUpgrade = 3,
+			AthenaUpgrade    = 2,
+		},
+
+		--[[
+			Fated Authority (RerollMetaUpgrade) rerolls one door's reward.
+			The star gets a "reroll?" suffix when a die is left, at least one
+			exit can be rerolled, and every exit the run can enter finalizes
+			below the biome's usual door value -- i.e. when the whole offer is
+			poor, not merely when one door is.
+		]]
+		RerollAdvice =
+		{
+			Enabled = true,
+			Default = 62,
+			Tartarus = 62,
+			Asphodel = 64,
+			Elysium = 64,
+			Styx = 56,
+		},
 
 		-- A Centaur Heart permanently adds max health; it is not ordinary healing.
 		MaxHealthBase = 70,
@@ -652,6 +719,31 @@ BoonAdvisor.Config =
 			-- run in progress, so it must not compete with a boon.
 			SuperGiftDrop = 30,
 			LastStandDrop = 88, -- an extra life is worth almost any price
+		},
+	},
+
+	--[[
+		Well of Charon. The Well is a screen built by CreateStoreButtons, not
+		a room of items, so it has its own hook and layout (BA_Well.lua). The
+		items themselves are rated in Shop.WellItems above. The badge sits on
+		the purchase card's title row, right-justified left of the price,
+		the same placement the Pool of Purging uses on its sell buttons.
+	]]
+	Well =
+	{
+		Enabled = true,
+		ShowReason = true,
+		ReasonColor = { 0.31, 0.16, 0.10, 1.0 },
+		Layout =
+		{
+			RankFontSize = 21,
+			RankOffsetX = 300,
+			RankOffsetY = -64,
+			TextWidth = 250,
+			ReasonFontSize = 15,
+			ReasonOffsetX = 300,
+			ReasonOffsetY = 30,
+			ReasonTextWidth = 360,
 		},
 	},
 

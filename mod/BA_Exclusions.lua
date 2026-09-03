@@ -228,14 +228,6 @@ function BoonAdvisor.KeepsakeGod()
 	return nil
 end
 
--- Is a temporary rarity boost active (Chaos gate / shrine effects)?
-function BoonAdvisor.HasRarityBoost()
-	if HasHeroTraitValue ~= nil and HasHeroTraitValue( "BoonRarityBonus" ) then
-		return true
-	end
-	return BoonAdvisor.HeroHasTrait( "SuperTemporaryBoonRarityTrait" )
-end
-
 --[[
 	Expected rarity of a god's next offer, computed the way the game computes it
 	(RoomManager.lua:2722-2765) rather than approximated:
@@ -368,15 +360,6 @@ function BoonAdvisor.HealingMultiplier()
 		change = MetaUpgradeData.HealingReductionShrineUpgrade.ChangeValue
 	end
 	return math.max( 0, 1 - ranks * ( change - 1 ) )
-end
-
-function BoonAdvisor.HealingReduced()
-	return GetNumMetaUpgrades ~= nil
-		and ( GetNumMetaUpgrades( "HealingReductionShrineUpgrade" ) or 0 ) > 0
-end
-
-function BoonAdvisor.HealingNullified()
-	return BoonAdvisor.HealingMultiplier() <= 0
 end
 
 -- Weighted pressure from the active Pact. Heat cost is not a useful proxy:
